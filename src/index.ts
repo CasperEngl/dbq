@@ -376,10 +376,11 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
     const confirmQuery = Effect.fn("Dbq.confirmQuery")(function* (
       security: Security,
+      database: Database,
       databaseId: string,
       sql: string,
     ) {
-      if (!security.confirmQueries) {
+      if (!security.confirmQueries || database.readonly) {
         return;
       }
 
@@ -541,7 +542,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       const startedAt = Date.now();
       const auditId = randomUUID();
 
-      yield* confirmQuery(config.security, databaseId, sql).pipe(
+      yield* confirmQuery(config.security, database, databaseId, sql).pipe(
         Effect.tapError((error) =>
           writeAuditEntry({
             auditId,

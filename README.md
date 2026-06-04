@@ -8,7 +8,7 @@ DBQ is designed for local agent use:
 - production targets should use read-only credentials
 - queries are wrapped in read-only transactions
 - every query is audited to `~/.dbq/audit.log`
-- query execution requires macOS Touch ID or account-password confirmation when `confirmQueries` is enabled
+- queries against writable database targets require macOS Touch ID or account-password confirmation when `confirmQueries` is enabled
 
 ## Install
 
