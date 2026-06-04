@@ -69,19 +69,23 @@ Edit `~/.dbq/config.toml`:
 ```toml
 [security]
 confirmQueries = true
+# 0 disables disk caching. Set a default TTL to reuse urlCommand results between CLI runs.
+urlCacheTtlSeconds = 900
 
 [databases.my-project-development]
 engine = "postgres"
 environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/my-project-development/url"
+# Optional per-database override. Each database URL has its own cache entry and expiry.
+urlCacheTtlSeconds = 300
 ```
 
 DBQ supports either `urlCommand` or `urlEnv`.
 
 Use `urlCommand` for secret-manager references and let DBQ run the command. Do not print database URLs or paste them into agent conversations.
 
-Resolved database URLs are cached in memory per DBQ process. A `urlCommand` runs once for a given database id and resolver config during a long-lived MCP process; restarting DBQ clears the cache.
+DBQ caches resolved database URLs in memory per process. Set `security.urlCacheTtlSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.urlCacheTtlSeconds` to give a specific database URL its own TTL. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave TTLs at `0` to avoid writing resolved database URLs to disk.
 
 ## CLI
 

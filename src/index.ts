@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Args, Command, Options } from "@effect/cli";
@@ -16,7 +16,13 @@ const version = "0.1.0";
 const rootDirectory = process.env.DBQ_HOME ?? join(homedir(), ".dbq");
 const configPath = join(rootDirectory, "config.toml");
 const auditLogPath = join(rootDirectory, "audit.log");
+const urlCachePath = join(rootDirectory, "url-cache.json");
 const defaultConfirmCommand = join(rootDirectory, "bin", "dbq-confirm");
+
+const NonNegativeIntegerSchema = Schema.Number.pipe(
+  Schema.int(),
+  Schema.filter((value) => value >= 0),
+);
 
 const DatabaseSchema = Schema.Struct({
   engine: Schema.Literal("postgres"),
@@ -24,7 +30,12 @@ const DatabaseSchema = Schema.Struct({
   readonly: Schema.optionalWith(Schema.Boolean, { default: () => true }),
   urlCommand: Schema.optional(Schema.NonEmptyString),
   urlEnv: Schema.optional(Schema.NonEmptyString),
-});
+  urlCacheTtlSeconds: Schema.optional(NonNegativeIntegerSchema),
+}).pipe(
+  Schema.filter((database) => database.urlCommand !== undefined || database.urlEnv !== undefined, {
+    message: () => "must define urlCommand or urlEnv",
+  }),
+);
 
 const ConfigSchema = Schema.Struct({
   security: Schema.optionalWith(
@@ -33,14 +44,39 @@ const ConfigSchema = Schema.Struct({
         default: () => true,
       }),
       confirmCommand: Schema.optional(Schema.NonEmptyString),
+      urlCacheTtlSeconds: Schema.optionalWith(NonNegativeIntegerSchema, {
+        default: () => 0,
+      }),
     }),
-    { default: () => ({ confirmQueries: true }) },
+    {
+      default: () => ({
+        confirmQueries: true,
+        urlCacheTtlSeconds: 0,
+      }),
+    },
   ),
   databases: Schema.Record({
     key: Schema.NonEmptyString,
     value: DatabaseSchema,
   }),
 });
+
+const CachedDatabaseUrlSchema = Schema.Struct({
+  databaseUrl: Schema.NonEmptyString,
+  expiresAt: Schema.NullOr(NonNegativeIntegerSchema),
+});
+
+const UrlCacheFileSchema = Schema.Struct({
+  entries: Schema.optionalWith(
+    Schema.Record({
+      key: Schema.NonEmptyString,
+      value: CachedDatabaseUrlSchema,
+    }),
+    { default: () => ({}) },
+  ),
+});
+
+const emptyUrlCacheFile = Schema.decodeUnknownSync(UrlCacheFileSchema)({ entries: {} });
 
 const queryDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
@@ -54,7 +90,14 @@ const describeDatabaseInputSchema = z.object({
 
 type Config = typeof ConfigSchema.Type;
 type Database = typeof DatabaseSchema.Type;
+type Security = NonNullable<Config["security"]>;
 type QueryDatabaseInput = z.infer<typeof queryDatabaseInputSchema>;
+type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
+
+const defaultSecurity = {
+  confirmQueries: true,
+  urlCacheTtlSeconds: 0,
+};
 
 class ConfigError extends Schema.TaggedError<ConfigError>()("ConfigError", {
   message: Schema.String,
@@ -84,7 +127,7 @@ type DbqError = ConfigError | ValidationError | ConfirmationError | DatabaseErro
 
 class Dbq extends Effect.Service<Dbq>()("Dbq", {
   sync: () => {
-    const databaseUrlCache = new Map<string, string>();
+    const databaseUrlCache = new Map<string, CachedDatabaseUrl>();
 
     const loadConfig = Effect.fn("Dbq.loadConfig")(function* () {
       const contents = yield* Effect.tryPromise({
@@ -97,9 +140,13 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         catch: (cause) => new ConfigError({ message: `Could not parse ${configPath}`, cause }),
       });
 
-      return yield* Schema.decodeUnknown(ConfigSchema)(parsedToml).pipe(
+      const config = yield* Schema.decodeUnknown(ConfigSchema)(parsedToml).pipe(
         Effect.mapError((cause) => new ConfigError({ message: `Invalid ${configPath}`, cause })),
       );
+
+      const security = config.security ?? defaultSecurity;
+
+      return { ...config, security };
     });
 
     const writeAuditEntry = Effect.fn("Dbq.writeAuditEntry")(function* (
@@ -144,12 +191,104 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       return database;
     });
 
+    const getCachedDatabaseUrl = (cacheKey: string) => {
+      const cachedDatabaseUrl = databaseUrlCache.get(cacheKey);
+
+      if (!cachedDatabaseUrl) {
+        return undefined;
+      }
+
+      if (cachedDatabaseUrl.expiresAt !== null && cachedDatabaseUrl.expiresAt <= Date.now()) {
+        databaseUrlCache.delete(cacheKey);
+        return undefined;
+      }
+
+      return cachedDatabaseUrl.databaseUrl;
+    };
+
+    const setCachedDatabaseUrl = (
+      cacheKey: string,
+      databaseUrl: string,
+      urlCacheTtlSeconds: number,
+    ) => {
+      databaseUrlCache.set(cacheKey, {
+        databaseUrl,
+        expiresAt: urlCacheTtlSeconds > 0 ? Date.now() + urlCacheTtlSeconds * 1000 : null,
+      });
+    };
+
+    const readOptionalFile = (filePath: string) =>
+      Effect.tryPromise({
+        try: () => readFile(filePath, "utf8"),
+        catch: () => undefined,
+      }).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+
+    const readDiskCachedDatabaseUrl = Effect.fn("Dbq.readDiskCachedDatabaseUrl")(function* (
+      cacheKey: string,
+    ) {
+      const contents = yield* readOptionalFile(urlCachePath);
+
+      if (!contents) {
+        return undefined;
+      }
+
+      const parsedCache = yield* parseUrlCache(contents);
+      const cachedDatabaseUrl = parsedCache.entries?.[cacheKey];
+
+      if (!cachedDatabaseUrl) {
+        return undefined;
+      }
+
+      if (cachedDatabaseUrl.expiresAt !== null && cachedDatabaseUrl.expiresAt <= Date.now()) {
+        return undefined;
+      }
+
+      return cachedDatabaseUrl.databaseUrl;
+    });
+
+    const writeDiskCachedDatabaseUrl = Effect.fn("Dbq.writeDiskCachedDatabaseUrl")(function* (
+      cacheKey: string,
+      databaseUrl: string,
+      urlCacheTtlSeconds: number,
+    ) {
+      if (urlCacheTtlSeconds <= 0) {
+        return;
+      }
+
+      const contents = yield* readOptionalFile(urlCachePath);
+      const parsedCache = contents ? yield* parseUrlCache(contents) : emptyUrlCacheFile;
+      const entries = { ...parsedCache.entries } satisfies Record<string, CachedDatabaseUrl>;
+
+      entries[cacheKey] = {
+        databaseUrl,
+        expiresAt: Date.now() + urlCacheTtlSeconds * 1000,
+      };
+
+      yield* Effect.tryPromise({
+        try: () => mkdir(dirname(urlCachePath), { recursive: true }),
+        catch: (cause) => new ConfigError({ message: `Could not create ${rootDirectory}`, cause }),
+      });
+      yield* Effect.tryPromise({
+        try: () =>
+          writeFile(urlCachePath, `${JSON.stringify({ entries }, null, 2)}\n`, {
+            mode: 0o600,
+          }),
+        catch: (cause) => new ConfigError({ message: `Could not write ${urlCachePath}`, cause }),
+      });
+      yield* Effect.tryPromise({
+        try: () => chmod(urlCachePath, 0o600),
+        catch: (cause) => new ConfigError({ message: `Could not secure ${urlCachePath}`, cause }),
+      });
+    });
+
     const resolveDatabaseUrl = Effect.fn("Dbq.resolveDatabaseUrl")(function* (
       databaseId: string,
       database: Database,
+      security: Security,
     ) {
+      const urlCacheTtlSeconds = database.urlCacheTtlSeconds ?? security.urlCacheTtlSeconds;
       const cacheKey = `${databaseId}:${database.urlEnv ?? ""}:${database.urlCommand ?? ""}`;
-      const cachedDatabaseUrl = databaseUrlCache.get(cacheKey);
+      const cachedDatabaseUrl = getCachedDatabaseUrl(cacheKey);
 
       if (cachedDatabaseUrl) {
         return cachedDatabaseUrl;
@@ -164,12 +303,21 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           });
         }
 
-        databaseUrlCache.set(cacheKey, value);
+        setCachedDatabaseUrl(cacheKey, value, urlCacheTtlSeconds);
         return value;
       }
 
       if (!database.urlCommand) {
         return yield* new ConfigError({ message: "Missing urlCommand" });
+      }
+
+      const diskCacheKey = hashCacheKey(cacheKey);
+      const diskCachedDatabaseUrl =
+        urlCacheTtlSeconds > 0 ? yield* readDiskCachedDatabaseUrl(diskCacheKey) : undefined;
+
+      if (diskCachedDatabaseUrl) {
+        setCachedDatabaseUrl(cacheKey, diskCachedDatabaseUrl, urlCacheTtlSeconds);
+        return diskCachedDatabaseUrl;
       }
 
       const processResult = Bun.spawn(["sh", "-lc", database.urlCommand], {
@@ -221,12 +369,13 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         });
       }
 
-      databaseUrlCache.set(cacheKey, databaseUrl);
+      setCachedDatabaseUrl(cacheKey, databaseUrl, urlCacheTtlSeconds);
+      yield* writeDiskCachedDatabaseUrl(diskCacheKey, databaseUrl, urlCacheTtlSeconds);
       return databaseUrl;
     });
 
     const confirmQuery = Effect.fn("Dbq.confirmQuery")(function* (
-      security: Config["security"],
+      security: Security,
       databaseId: string,
       sql: string,
     ) {
@@ -319,7 +468,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (databaseId: string) {
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
-      const databaseUrl = yield* resolveDatabaseUrl(databaseId, database);
+      const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
       const startedAt = Date.now();
       const auditId = randomUUID();
 
@@ -407,7 +556,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         ),
       );
 
-      const databaseUrl = yield* resolveDatabaseUrl(databaseId, database);
+      const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
 
       return yield* withClient(databaseUrl, (client) =>
         Effect.gen(function* () {
@@ -636,18 +785,30 @@ function summarizeSql(sql: string) {
   return `${singleLineSql.slice(0, 157)}...`;
 }
 
+function hashCacheKey(cacheKey: string) {
+  return createHash("sha256").update(cacheKey).digest("hex");
+}
+
+function parseUrlCache(contents: string) {
+  return Schema.decodeUnknown(Schema.parseJson(UrlCacheFileSchema))(contents).pipe(
+    Effect.catchAll(() => Effect.succeed(emptyUrlCacheFile)),
+  );
+}
+
 function runDbqForMcp<A>(effect: Effect.Effect<A, DbqError>) {
   return effect.pipe(Effect.provide(MainLive), Effect.runPromise);
 }
 
 function jsonResponse(value: unknown) {
+  const content = [
+    {
+      type: "text",
+      text: JSON.stringify(value, null, 2),
+    },
+  ] satisfies Array<{ type: "text"; text: string }>;
+
   return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(value, null, 2),
-      },
-    ],
+    content,
   };
 }
 

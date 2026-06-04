@@ -7,7 +7,7 @@ description: Use DBQ to list, inspect, and safely query configured Postgres data
 
 DBQ queries named Postgres databases through `~/.dbq/config.toml`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, wraps queries in read-only transactions, and requires macOS confirmation for query execution.
 
-DBQ caches resolved database URLs in memory per process. A `urlCommand` such as `op read ...` runs once for a given database id and resolver config during a long-lived MCP process; restarting DBQ clears the cache.
+DBQ caches resolved database URLs in memory per process. Set `security.urlCacheTtlSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.urlCacheTtlSeconds` to give a specific database URL its own TTL. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave TTLs at `0` to avoid writing resolved database URLs to disk.
 
 ## Install
 
@@ -91,12 +91,16 @@ DBQ reads config from `~/.dbq/config.toml`. Do not print, commit, or expose data
 ```toml
 [security]
 confirmQueries = true
+# 0 disables disk caching. Set a default TTL to reuse urlCommand results between CLI runs.
+urlCacheTtlSeconds = 900
 
 [databases.app-development]
 engine = "postgres"
 environment = "development"
 readonly = true
 urlCommand = "op read 'op://Databases/App Development DB URL/notesPlain'"
+# Optional per-database override. Each database URL has its own cache entry and expiry.
+urlCacheTtlSeconds = 300
 
 [databases.app-production-readonly]
 engine = "postgres"

@@ -27,6 +27,7 @@
     "@types/pg": "^8.20.0",
     "@typescript/native-preview": "^7.0.0-dev.20260604.1",
     "oxfmt": "^0.53.0",
-    "oxlint": "^1.68.0"
+    "oxlint": "^1.68.0",
+    "oxlint-plugin-eslint": "^1.68.0"
   }
 }

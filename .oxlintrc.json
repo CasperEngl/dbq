@@ -1,4 +1,38 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["dist/**", "node_modules/**"]
+  "ignorePatterns": ["dist/**", "node_modules/**"],
+  "jsPlugins": ["oxlint-plugin-eslint"],
+  "rules": {
+    "eslint-js/no-restricted-syntax": [
+      "error",
+      {
+        "selector": ":matches(FunctionDeclaration, FunctionExpression, ArrowFunctionExpression)[returnType]",
+        "message": "Do not write function return types. Let TypeScript infer them; when inference is unclear, name intermediate values or extract a schema/type alias."
+      },
+      {
+        "selector": "VariableDeclaration:not([kind='let']) > VariableDeclarator[id.typeAnnotation]",
+        "message": "Do not annotate const/var values. Let the initializer infer the type; use `satisfies` to check an object shape without changing inference."
+      },
+      {
+        "selector": "VariableDeclaration[kind='let'] > VariableDeclarator[id.typeAnnotation]:not([id.typeAnnotation.typeAnnotation.type='TSUnknownKeyword'])",
+        "message": "Only annotate `let` as `unknown` when the value truly starts unknown. Otherwise initialize from a typed value, narrow from `unknown`, or use `satisfies`."
+      },
+      {
+        "selector": "PropertyDefinition[typeAnnotation]",
+        "message": "Do not annotate class fields. Initialize from typed values or use `satisfies` on object literals."
+      },
+      {
+        "selector": "TSAsExpression:not([typeAnnotation.type='TSTypeReference'][typeAnnotation.typeName.name='const'])",
+        "message": "Do not use type casts, except `as const`. Prefer `satisfies` for shape checks, schema decoding for unknown input, or a real narrowing function."
+      },
+      {
+        "selector": "TSTypeAssertion",
+        "message": "Do not use angle-bracket type casts. Prefer `satisfies`, schema decoding, or a narrowing function."
+      },
+      {
+        "selector": "TSNonNullExpression",
+        "message": "Do not use non-null assertions. Check the value and return or fail early so TypeScript can narrow it."
+      }
+    ]
+  }
 }
