@@ -1,29 +1,21 @@
 # DBQ
 
-DBQ is a local MCP server for querying named Postgres databases through a global `~/.dbq/config.toml` registry.
+DBQ is a local CLI and MCP server for safely querying named Postgres databases through `~/.dbq/config.toml`.
 
-It is designed for agent use:
+DBQ is designed for local agent use:
 
 - database URLs stay on the local machine
 - production targets should use read-only credentials
 - queries are wrapped in read-only transactions
 - every query is audited to `~/.dbq/audit.log`
-- `query_database` requires macOS Touch ID or account-password confirmation before each query
+- query execution requires macOS Touch ID or account-password confirmation when `confirmQueries` is enabled
 
 ## Install
 
-Install the latest macOS Apple Silicon release:
+Install DBQ with the release installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CasperEngl/dbq/main/install-release.sh | bash
-```
-
-Or download the release archive for your platform, then run:
-
-```bash
-tar -xzf dbq-v0.1.0-darwin-arm64.tar.gz
-cd dbq-v0.1.0-darwin-arm64
-./install.sh
 ```
 
 The installer writes binaries to:
@@ -40,10 +32,10 @@ It also links the commands into `~/.local/bin` by default:
 ~/.local/bin/dbq-confirm
 ```
 
-Use `DBQ_BIN_DIR` to choose another PATH directory:
+Set `DBQ_BIN_DIR` to choose another PATH directory:
 
 ```bash
-DBQ_BIN_DIR="$HOME/bin" ./install.sh
+curl -fsSL https://raw.githubusercontent.com/CasperEngl/dbq/main/install-release.sh | DBQ_BIN_DIR="$HOME/bin" bash
 ```
 
 If no config exists yet, it creates:
@@ -87,6 +79,10 @@ urlCommand = "op read op://Databases/my-project-development/url"
 
 DBQ supports either `urlCommand` or `urlEnv`.
 
+Use `urlCommand` for secret-manager references and let DBQ run the command. Do not print database URLs or paste them into agent conversations.
+
+Resolved database URLs are cached in memory per DBQ process. A `urlCommand` runs once for a given database id and resolver config during a long-lived MCP process; restarting DBQ clears the cache.
+
 ## CLI
 
 Use the same binary locally:
@@ -109,35 +105,8 @@ DBQ exposes:
 
 ## Agent Skill
 
-This repo includes a DBQ agent skill at `skills/dbq/SKILL.md`.
-
-Install it from this repo with:
+Install the DBQ agent skill with:
 
 ```bash
 npx skills add CasperEngl/dbq --skill dbq --full-depth
 ```
-
-From a local checkout, test discovery with:
-
-```bash
-npx skills add . --list --full-depth
-```
-
-## Development
-
-```bash
-bun install
-bun run check
-bun run build
-```
-
-## Release
-
-Push a version tag to build and publish the macOS Apple Silicon archive:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow uploads `dbq-vVERSION-darwin-arm64.tar.gz` to the GitHub Release. For Homebrew, copy `homebrew/dbq.rb` into a tap repository after replacing `REPLACE_WITH_RELEASE_SHA256` with the release archive SHA-256.
