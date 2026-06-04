@@ -1,0 +1,14 @@
+[security]
+confirmQueries = true
+
+[databases.example-development]
+engine = "postgres"
+environment = "development"
+readonly = true
+urlCommand = "op read op://Databases/example-development/url"
+
+[databases.example-production]
+engine = "postgres"
+environment = "production"
+readonly = true
+urlCommand = "op read op://Databases/example-production-readonly/url"

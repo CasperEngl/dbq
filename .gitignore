@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.DS_Store
+.*.bun-build
+audit.log
+config.toml
+bin/DBQ

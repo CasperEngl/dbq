@@ -1,0 +1,24 @@
+{
+  "name": "dbq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run build:release",
+    "build:auth": "swiftc bin/confirm-query.swift -o dist/package/bin/DBQ",
+    "build:mcp": "bun build --compile --outfile dist/package/bin/dbq-mcp src/index.ts",
+    "build:release": "bash scripts/build-release.sh",
+    "check": "bunx tsc --noEmit",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pg": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/pg": "^8.20.0",
+    "typescript": "^6.0.3"
+  }
+}
