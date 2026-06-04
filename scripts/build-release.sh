@@ -13,8 +13,8 @@ cd "$ROOT_DIR"
 rm -rf "$ROOT_DIR/dist"
 mkdir -p "$PACKAGE_DIR/bin"
 
-bun build --compile --outfile "$PACKAGE_DIR/bin/dbq-mcp" "$ROOT_DIR/src/index.ts"
-swiftc "$ROOT_DIR/bin/confirm-query.swift" -o "$PACKAGE_DIR/bin/DBQ"
+bun build --compile --outfile "$PACKAGE_DIR/bin/dbq" "$ROOT_DIR/src/index.ts"
+swiftc "$ROOT_DIR/bin/confirm-query.swift" -o "$PACKAGE_DIR/bin/dbq-confirm"
 
 install -m 0755 "$ROOT_DIR/install.sh" "$PACKAGE_DIR/install.sh"
 install -m 0644 "$ROOT_DIR/config.example.toml" "$PACKAGE_DIR/config.example.toml"
