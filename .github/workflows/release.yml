@@ -23,11 +23,38 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Read package version
+        id: version
+        run: |
+          VERSION="$(bun -e 'console.log((await import("./package.json")).default.version)')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$GITHUB_REF_NAME" = "${{ steps.version.outputs.tag }}"
+
       - name: Typecheck
         run: bun run check
 
       - name: Build release archive
         run: bun run build
+
+      - name: Verify built CLI version
+        run: test "$(dist/dbq-v${{ steps.version.outputs.version }}-darwin-arm64/bin/dbq --version)" = "${{ steps.version.outputs.version }}"
+
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          bun scripts/release.ts notes "${{ steps.version.outputs.version }}" > dist/release-notes.md
+          SHA256="$(shasum -a 256 dist/dbq-v${{ steps.version.outputs.version }}-darwin-arm64.tar.gz | awk '{print $1}')"
+          {
+            echo
+            echo "Asset SHA256:"
+            echo '```'
+            echo "$SHA256"
+            echo '```'
+          } >> dist/release-notes.md
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -40,4 +67,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/release-notes.md
           files: dist/dbq-v*-darwin-arm64.tar.gz

@@ -219,6 +219,24 @@ dbq describe my-project-development --format compact
 dbq describe my-project-development --format compact --namespace public --relation users --relation posts
 ```
 
+## Release
+
+Release from a clean `main` worktree:
+
+```bash
+bun run release -- patch
+git push origin main v0.1.1
+```
+
+Use `minor`, `major`, or an exact version like `0.2.0` instead of `patch` when needed. The release command updates `package.json`, prepends `CHANGELOG.md`, runs `bun run check`, builds the archive, verifies the compiled CLI version, commits the release, and creates an annotated `vX.Y.Z` tag. Add `--push` to publish the branch and tag in the same command.
+
+After the GitHub release action publishes the archive, update the Homebrew formula from the actual published asset:
+
+```bash
+bun run release:homebrew -- v0.1.1
+git push origin main
+```
+
 ## Agent Skill
 
 Install the DBQ agent skill with:

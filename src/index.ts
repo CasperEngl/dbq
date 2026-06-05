@@ -5,8 +5,9 @@ import { dirname, join } from "node:path";
 import { Args, Command, Options } from "@effect/cli";
 import { BunContext } from "@effect/platform-bun";
 import { Console, Effect, Layer, Schema } from "effect";
+import packageJson from "../package.json" with { type: "json" };
 
-const version = "0.1.0";
+const version = packageJson.version;
 const rootDirectory = process.env.DBQ_HOME ?? join(homedir(), ".dbq");
 const configPath = join(rootDirectory, "config.toml");
 const auditLogPath = join(rootDirectory, "audit.log");

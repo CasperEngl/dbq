@@ -7,15 +7,18 @@
     "build": "bun run build:release",
     "build:auth": "swiftc bin/confirm-query.swift -o dist/package/bin/dbq-confirm",
     "build:cli": "bun build --compile --outfile dist/package/bin/dbq src/index.ts",
-    "build:release": "bash scripts/build-release.sh",
+    "build:release": "bun scripts/release.ts build",
     "check": "bun run format && bun run lint && bun run typecheck",
     "format": "oxfmt --write .",
     "lint": "oxlint . --deny-warnings",
+    "release": "bun scripts/release.ts create",
+    "release:homebrew": "bun scripts/release.ts homebrew",
     "start": "bun run src/index.ts",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "@effect/cli": "^0.75.2",
+    "@effect/platform": "^0.96.1",
     "@effect/platform-bun": "^0.90.0",
     "effect": "^3.21.2"
   },
