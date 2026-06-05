@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 - 2026-06-05
+
+- Refactor release script to simplify function signatures
+- Update GitHub Actions dependencies to latest versions
+- Add foreign key support to PostgreSQL schema introspection
+
 ## v0.2.0 - 2026-06-05
 
 - Initial DBQ release project
