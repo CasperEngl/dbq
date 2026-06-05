@@ -170,7 +170,7 @@ const describeDatabaseInputSchema = z.object({
   refresh: z.boolean().default(false),
   format: z.enum(["compact", "json"]).default("compact"),
   namespace: z.string().min(1).optional(),
-  relation: z.string().min(1).optional(),
+  relations: z.array(z.string().min(1)).optional(),
 });
 
 type Config = typeof ConfigSchema.Type;
@@ -728,7 +728,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (
       input: DescribeDatabaseInput,
     ) {
-      const { databaseId, refresh, format, namespace, relation } = input;
+      const { databaseId, refresh, format, namespace, relations } = input;
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
 
@@ -751,7 +751,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
       ) =>
         formatDatabaseStructure(
-          filterDatabaseStructure(databaseStructure, { namespace, relation }),
+          filterDatabaseStructure(databaseStructure, { namespace, relations }),
           databaseStructureCacheStatus,
           format,
         );
@@ -1046,7 +1046,7 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
     "describe_database",
     {
       description:
-        "Describe namespaces, relations, and columns for a configured database when DBQ has a metadata adapter. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use namespace and relation to scope large database output.",
+        "Describe namespaces, relations, and columns for a configured database when DBQ has a metadata adapter. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use namespace and relations to scope large database output.",
       inputSchema: describeDatabaseInputSchema,
     },
     (input) => {
@@ -1100,8 +1100,10 @@ const describeCommand = Command.make(
       Options.withDescription("Only output one namespace from the cached database structure"),
     ),
     relation: Options.text("relation").pipe(
-      Options.withDefault(""),
-      Options.withDescription("Only output one relation from the cached database structure"),
+      Options.repeated,
+      Options.withDescription(
+        "Only output this relation from the cached database structure; repeat to include multiple relations",
+      ),
     ),
   },
   ({ databaseId, refresh, format, namespace, relation }) =>
@@ -1113,7 +1115,7 @@ const describeCommand = Command.make(
           refresh,
           format,
           namespace: namespace || undefined,
-          relation: relation || undefined,
+          relations: relation.length > 0 ? relation : undefined,
         }),
       );
       yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
@@ -1306,11 +1308,13 @@ function countDatabaseStructureColumns(databaseStructure: DatabaseStructure) {
 
 function filterDatabaseStructure(
   databaseStructure: DatabaseStructure,
-  scope: { namespace?: string; relation?: string },
+  scope: { namespace?: string; relations?: ReadonlyArray<string> },
 ) {
-  if (!scope.namespace && !scope.relation) {
+  if (!scope.namespace && scope.relations === undefined) {
     return databaseStructure;
   }
+
+  const relationNames = scope.relations === undefined ? undefined : new Set(scope.relations);
 
   return {
     ...databaseStructure,
@@ -1319,7 +1323,7 @@ function filterDatabaseStructure(
       .map((namespace) => ({
         ...namespace,
         relations: namespace.relations.filter(
-          (relation) => scope.relation === undefined || relation.name === scope.relation,
+          (relation) => relationNames === undefined || relationNames.has(relation.name),
         ),
       }))
       .filter((namespace) => namespace.relations.length > 0),

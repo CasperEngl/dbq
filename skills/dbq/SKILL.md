@@ -13,6 +13,8 @@ For databases that need a custom client, DBQ can run `databases.<id>.queryComman
 
 DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model when DBQ has a metadata adapter for the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` only when fresh database structure is needed.
 
+`describe` always caches the full database structure snapshot when it has to inspect the database. The `namespace` and `relations` filters only limit returned output. Agents can first call `describe_database` without relation filters to populate or reuse the full cached structure, then call it again with `relations: ["users", "posts"]` to retrieve a smaller focused slice from that cached structure.
+
 ## Install
 
 Install DBQ with the release installer:
@@ -41,7 +43,7 @@ Use the CLI:
 dbq list
 dbq describe app-development --format compact
 dbq describe app-development --format compact --namespace public
-dbq describe app-development --format compact --namespace public --relation users
+dbq describe app-development --format compact --namespace public --relation users --relation posts
 dbq describe app-development --format json
 dbq describe app-development --format compact --refresh
 dbq query app-development 'select * from users limit 10'
@@ -49,7 +51,14 @@ dbq query app-production-readonly 'select now()'
 dbq mcp
 ```
 
-Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and `--relation` to keep large database output focused. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided after confirmation when confirmation is enabled.
+Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. MCP callers use the `relations` array for the same filter. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided after confirmation when confirmation is enabled.
+
+For CLI use, run an unfiltered describe when you need to warm or refresh the full structure cache:
+
+```bash
+dbq describe app-development --format compact
+dbq describe app-development --format compact --namespace public --relation users --relation posts
+```
 
 ## Querying Rules
 
@@ -58,7 +67,7 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 - Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
 - Use the `dbq` CLI when MCP tools are unavailable or unclear.
 - Before writing SQL against an unfamiliar database, call `describe_database` once with `format: "compact"` and reuse that database structure during the task. If using the CLI, pass `--format compact` explicitly. If DBQ reports no metadata adapter, run the engine-specific metadata SQL you need through `query_database`.
-- For large databases, scope structure output with `namespace` and `relation` instead of dumping the whole database structure into the conversation.
+- For large databases, scope MCP structure output with `namespace` and `relations`, or CLI structure output with `--namespace` and repeated `--relation`, instead of dumping the whole database structure into the conversation. The filtered response still comes from the full cached structure snapshot.
 - Use `format: "json"` or `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
 - Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
 - DBQ does not rewrite SQL or enforce row limits. Include dialect-appropriate limits in the SQL when output should be bounded.
