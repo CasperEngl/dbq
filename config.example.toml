@@ -4,22 +4,27 @@ confirmQueries = true
 databaseStructureCacheDurationSeconds = 3600
 
 [databases.example-development]
-engine = "sql"
+engine = "postgres"
 environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/example-development/url"
+queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
+describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
 # Optional per-database database structure snapshot expiry override.
 databaseStructureCacheDurationSeconds = 900
 
 [databases.example-production]
-engine = "sql"
+engine = "postgres"
 environment = "production"
 readonly = true
 urlCommand = "op read op://Databases/example-production-readonly/url"
+queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
+describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
 
-[databases.example-custom-client]
-engine = "sql"
+[databases.example-analytics]
+engine = "postgres"
 environment = "development"
 readonly = true
-urlCommand = "op read op://Databases/example-custom-client/url"
-queryCommand = "example-sql-client --url \"$DBQ_DATABASE_URL\" --execute \"$DBQ_SQL\""
+urlCommand = "op read op://Databases/example-analytics/url"
+queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
+describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
