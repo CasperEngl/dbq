@@ -98,10 +98,11 @@ Ambiguous database names:
 
 ## Local Config
 
-DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose database URLs. Use `url` for literal local connection strings, `urlCommand` for secret-manager references, or `urlEnv` for environment variables. Prefer `urlCommand` with 1Password references for shared or production databases, but let DBQ execute those commands.
+DBQ reads config from `~/.dbq/config.jsonc`. Keep `"$schema": "./config.schema.json"` for editor validation when `~/.dbq/config.schema.json` is installed. Do not print, commit, or expose database URLs. Use `url` for literal local connection strings, `urlCommand` for secret-manager references, or `urlEnv` for environment variables. Prefer `urlCommand` with 1Password references for shared or production databases, but let DBQ execute those commands.
 
 ```jsonc
 {
+  "$schema": "./config.schema.json",
   "security": {
     "confirmQueries": true,
     // 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.

@@ -157,7 +157,7 @@ const buildRelease = Effect.fn("buildRelease")(function* () {
     "--compile",
     "--outfile",
     join(packageDirectory, "bin/dbq"),
-    join(rootDirectory, "src/index.ts"),
+    join(rootDirectory, "src/cli.ts"),
   ]);
   yield* runInherited("swiftc", [
     join(rootDirectory, "bin/confirm-query.swift"),
@@ -178,6 +178,11 @@ const buildRelease = Effect.fn("buildRelease")(function* () {
   yield* installFile(
     join(rootDirectory, "config.example.jsonc"),
     join(packageDirectory, "config.example.jsonc"),
+    0o644,
+  );
+  yield* installFile(
+    join(rootDirectory, "config.schema.json"),
+    join(packageDirectory, "config.schema.json"),
     0o644,
   );
   yield* installFile(join(rootDirectory, "README.md"), join(packageDirectory, "README.md"), 0o644);

@@ -6,15 +6,16 @@
   "scripts": {
     "build": "bun run build:release",
     "build:auth": "swiftc bin/confirm-query.swift -o dist/package/bin/dbq-confirm",
-    "build:cli": "bun build --compile --outfile dist/package/bin/dbq src/index.ts",
+    "build:cli": "bun build --compile --outfile dist/package/bin/dbq src/cli.ts",
     "build:release": "bun scripts/release.ts build",
     "check": "bun run format && bun run lint && bun run typecheck",
     "format": "oxfmt --write .",
+    "generate:config-schema": "bun run scripts/generate-config-schema.ts",
     "install:local": "./install-local.sh",
     "lint": "oxlint . --deny-warnings",
     "release": "bun scripts/release.ts create",
     "release:homebrew": "bun scripts/release.ts homebrew",
-    "start": "bun run src/index.ts",
+    "start": "bun run src/cli.ts",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {

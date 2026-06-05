@@ -1,4 +1,5 @@
 {
+  "$schema": "./config.schema.json",
   "security": {
     "confirmQueries": true,
     // 0 keeps database structure snapshots until manually refreshed. Positive values expire them.

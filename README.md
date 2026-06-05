@@ -55,6 +55,7 @@ If no config exists yet, it creates:
 
 ```text
 ~/.dbq/config.jsonc
+~/.dbq/config.schema.json
 ```
 
 ## Configure Databases
@@ -63,6 +64,7 @@ Edit `~/.dbq/config.jsonc`:
 
 ```jsonc
 {
+  "$schema": "./config.schema.json",
   "security": {
     "confirmQueries": true,
     // 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
@@ -84,6 +86,12 @@ Edit `~/.dbq/config.jsonc`:
     },
   },
 }
+```
+
+`config.schema.json` is generated from DBQ's Effect `ConfigSchema`:
+
+```bash
+bun run generate:config-schema
 ```
 
 DBQ supports `url`, `urlCommand`, or `urlEnv`.

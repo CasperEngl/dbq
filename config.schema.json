@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "NonEmptyString": {
+      "type": "string",
+      "description": "a non empty string",
+      "title": "nonEmptyString",
+      "minLength": 1
+    },
+    "NonNegativeInt": {
+      "type": "integer",
+      "description": "an integer",
+      "title": "int",
+      "minimum": 0
+    }
+  },
+  "type": "object",
+  "required": ["databases"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "security": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "confirmQueries": {
+          "type": "boolean"
+        },
+        "confirmCommand": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "databaseUrlCacheDurationSeconds": {
+          "$ref": "#/$defs/NonNegativeInt"
+        },
+        "urlCacheTtlSeconds": {
+          "$ref": "#/$defs/NonNegativeInt"
+        },
+        "databaseStructureCacheDurationSeconds": {
+          "$ref": "#/$defs/NonNegativeInt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "databases": {
+      "type": "object",
+      "required": [],
+      "properties": {},
+      "patternProperties": {
+        "": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["engine", "url"],
+              "properties": {
+                "engine": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "readonly": {
+                  "type": "boolean"
+                },
+                "queryCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "describeCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "databaseUrlCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "urlCacheTtlSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "databaseStructureCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "url": {
+                  "$ref": "#/$defs/NonEmptyString"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["engine", "urlCommand"],
+              "properties": {
+                "engine": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "readonly": {
+                  "type": "boolean"
+                },
+                "queryCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "describeCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "databaseUrlCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "urlCacheTtlSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "databaseStructureCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "urlCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["engine", "urlEnv"],
+              "properties": {
+                "engine": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "readonly": {
+                  "type": "boolean"
+                },
+                "queryCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "describeCommand": {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                "databaseUrlCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "urlCacheTtlSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "databaseStructureCacheDurationSeconds": {
+                  "$ref": "#/$defs/NonNegativeInt"
+                },
+                "urlEnv": {
+                  "$ref": "#/$defs/NonEmptyString"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/NonEmptyString"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/CasperEngl/dbq/main/config.schema.json",
+  "title": "DBQ config"
+}

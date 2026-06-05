@@ -47,6 +47,7 @@ write_launcher "dbq-describe-postgres" "$DBQ_HOME/bin/dbq-describe-postgres"
 if [ ! -f "$DBQ_HOME/config.jsonc" ]; then
   install -m 0600 "$SCRIPT_DIR/config.example.jsonc" "$DBQ_HOME/config.jsonc"
 fi
+install -m 0644 "$SCRIPT_DIR/config.schema.json" "$DBQ_HOME/config.schema.json"
 
 ENV_NOTE="
 To make DBQ_HOME, DBQ_BIN_DIR, and PATH available in your shell:
@@ -69,4 +70,5 @@ Run the local CLI with:
 Edit your database registry:
 
   $DBQ_HOME/config.jsonc
+  $DBQ_HOME/config.schema.json
 EOF

@@ -14,12 +14,14 @@ class Dbq < Formula
     bin.install "bin/dbq"
     bin.install "bin/dbq-confirm"
     pkgshare.install "config.example.jsonc"
+    pkgshare.install "config.schema.json"
   end
 
   def caveats
     <<~EOS
       Create your DBQ config:
         mkdir -p ~/.dbq
+        cp #{pkgshare}/config.schema.json ~/.dbq/config.schema.json
         cp #{pkgshare}/config.example.jsonc ~/.dbq/config.jsonc
         chmod 600 ~/.dbq/config.jsonc
 
