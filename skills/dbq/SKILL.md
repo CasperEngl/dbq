@@ -5,7 +5,7 @@ description: Use DBQ to list, inspect, and safely query configured databases.
 
 # DBQ
 
-DBQ queries named databases through `~/.dbq/config.toml`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for queries when `confirmQueries` is enabled.
+DBQ queries named databases through `~/.dbq/config.jsonc`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for queries when `confirmQueries` is enabled.
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
@@ -37,7 +37,7 @@ The installer uses these defaults:
 - Managed binaries: `~/.dbq/bin/dbq`, `~/.dbq/bin/dbq-confirm`, `~/.dbq/bin/dbq-describe-postgres`
 - PATH wrappers: `~/.local/bin/dbq`, `~/.local/bin/dbq-confirm`, `~/.local/bin/dbq-describe-postgres`
 - Shell env file: `~/.dbq/env`
-- Config: `~/.dbq/config.toml`
+- Config: `~/.dbq/config.jsonc`
 
 Source the env file when manual shell access to `DBQ_HOME`, `DBQ_BIN_DIR`, and the DBQ PATH is needed:
 
@@ -98,51 +98,56 @@ Ambiguous database names:
 
 ## Local Config
 
-DBQ reads config from `~/.dbq/config.toml`. Do not print, commit, or expose database URLs. Prefer `urlCommand` with 1Password references, but let DBQ execute those commands.
+DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose database URLs. Prefer `urlCommand` with 1Password references, but let DBQ execute those commands.
 
-```toml
-[security]
-confirmQueries = true
-# 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
-databaseUrlCacheDurationSeconds = 900
-# 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
-databaseStructureCacheDurationSeconds = 3600
-
-[databases.app-development]
-engine = "postgres"
-environment = "development"
-readonly = true
-urlCommand = "op read 'op://Databases/App Development DB URL/notesPlain'"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
-# Optional per-database override. Each database URL has its own cache entry and expiry.
-databaseUrlCacheDurationSeconds = 300
-# Optional per-database structure snapshot expiry override.
-databaseStructureCacheDurationSeconds = 900
-
-[databases.app-production-readonly]
-engine = "postgres"
-environment = "production"
-readonly = true
-urlCommand = "op read 'op://Databases/App Production Read-Only DB URL/notesPlain'"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
-
-[databases.app-production-writable]
-engine = "postgres"
-environment = "production"
-readonly = false
-urlCommand = "op read 'op://Databases/App Production Writable DB URL/notesPlain'"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
-
-[databases.app-analytics]
-engine = "postgres"
-environment = "development"
-readonly = true
-urlCommand = "op read 'op://Databases/App Analytics DB URL/notesPlain'"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
+```jsonc
+{
+  "security": {
+    "confirmQueries": true,
+    // 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
+    "databaseUrlCacheDurationSeconds": 900,
+    // 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
+    "databaseStructureCacheDurationSeconds": 3600,
+  },
+  "databases": {
+    "app-development": {
+      "engine": "postgres",
+      "environment": "development",
+      "readonly": true,
+      "urlCommand": "op read 'op://Databases/App Development DB URL/notesPlain'",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+      // Optional per-database override. Each database URL has its own cache entry and expiry.
+      "databaseUrlCacheDurationSeconds": 300,
+      // Optional per-database structure snapshot expiry override.
+      "databaseStructureCacheDurationSeconds": 900,
+    },
+    "app-production-readonly": {
+      "engine": "postgres",
+      "environment": "production",
+      "readonly": true,
+      "urlCommand": "op read 'op://Databases/App Production Read-Only DB URL/notesPlain'",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+    },
+    "app-production-writable": {
+      "engine": "postgres",
+      "environment": "production",
+      "readonly": false,
+      "urlCommand": "op read 'op://Databases/App Production Writable DB URL/notesPlain'",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+    },
+    "app-analytics": {
+      "engine": "postgres",
+      "environment": "development",
+      "readonly": true,
+      "urlCommand": "op read 'op://Databases/App Analytics DB URL/notesPlain'",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+    },
+  },
+}
 ```
 
 The `urlCommand` examples document how DBQ is configured. They are not instructions for agents to run `op` directly during query tasks.

@@ -5,11 +5,12 @@ import { dirname, join } from "node:path";
 import { Args, Command, Options } from "@effect/cli";
 import { BunContext } from "@effect/platform-bun";
 import { Console, Effect, Layer, Schema } from "effect";
+import { parse as parseJsonc } from "jsonc-parser";
 import packageJson from "../package.json" with { type: "json" };
 
 const version = packageJson.version;
 const rootDirectory = process.env.DBQ_HOME ?? join(homedir(), ".dbq");
-const configPath = join(rootDirectory, "config.toml");
+const configPath = join(rootDirectory, "config.jsonc");
 const auditLogPath = join(rootDirectory, "audit.log");
 const urlCachePath = join(rootDirectory, "url-cache.json");
 const databaseStructureCachePath = join(rootDirectory, "database-structure-cache.json");
@@ -34,6 +35,9 @@ const DatabaseBaseSchema = Schema.Struct({
 const DatabaseSchema = DatabaseBaseSchema.pipe(
   Schema.extend(
     Schema.Union(
+      Schema.Struct({
+        url: Schema.NonEmptyString,
+      }),
       Schema.Struct({
         urlCommand: Schema.NonEmptyString,
       }),
@@ -192,12 +196,12 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         catch: (cause) => new ConfigError({ message: `Could not read ${configPath}`, cause }),
       });
 
-      const parsedToml = yield* Effect.try({
-        try: () => Bun.TOML.parse(contents),
+      const parsedConfig = yield* Effect.try({
+        try: () => parseJsonc(contents),
         catch: (cause) => new ConfigError({ message: `Could not parse ${configPath}`, cause }),
       });
 
-      const config = yield* ConfigSchema.pipe(Schema.decodeUnknown)(parsedToml).pipe(
+      const config = yield* ConfigSchema.pipe(Schema.decodeUnknown)(parsedConfig).pipe(
         Effect.mapError((cause) => new ConfigError({ message: `Invalid ${configPath}`, cause })),
       );
 
@@ -447,6 +451,10 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         security.databaseUrlCacheDurationSeconds ??
         security.urlCacheTtlSeconds ??
         0;
+      if ("url" in database) {
+        return database.url;
+      }
+
       if ("urlCommand" in database) {
         const urlCommand = database.urlCommand;
         const cacheKey = `${databaseId}::${urlCommand}`;
@@ -726,7 +734,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         engine: database.engine,
         environment: database.environment,
         readonly: database.readonly,
-        secretResolver: "urlCommand" in database ? "urlCommand" : "urlEnv",
+        secretResolver: "url" in database ? "url" : "urlCommand" in database ? "urlCommand" : "urlEnv",
       }));
 
       return { databases };

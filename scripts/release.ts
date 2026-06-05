@@ -176,8 +176,8 @@ const buildRelease = Effect.fn("buildRelease")(function* () {
     0o755,
   );
   yield* installFile(
-    join(rootDirectory, "config.example.toml"),
-    join(packageDirectory, "config.example.toml"),
+    join(rootDirectory, "config.example.jsonc"),
+    join(packageDirectory, "config.example.jsonc"),
     0o644,
   );
   yield* installFile(join(rootDirectory, "README.md"), join(packageDirectory, "README.md"), 0o644);

@@ -10,10 +10,10 @@ This runs formatting with oxfmt, linting with oxlint, and TypeScript typecheckin
 
 ## DBQ testing
 
-Before testing the DBQ CLI against the local user's configured databases, ask the user for permission to update the local user's global DBQ config at `~/.dbq/config.toml` so database structure snapshots are persisted. If the user approves, ensure the `[security]` section contains:
+Before testing the DBQ CLI against the local user's configured databases, ask the user for permission to update the local user's global DBQ config at `~/.dbq/config.jsonc` so database structure snapshots are persisted. If the user approves, ensure the `security` object contains:
 
-```toml
-databaseStructureCacheDurationSeconds = 3600
+```jsonc
+"databaseStructureCacheDurationSeconds": 3600
 ```
 
 Do not print or inspect configured database URLs or secret resolver output while making this change. If the user does not approve the config update, do not test CLI behavior that depends on persisted database structure snapshots.

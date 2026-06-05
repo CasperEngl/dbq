@@ -1,6 +1,6 @@
 # DBQ
 
-DBQ is a local CLI for querying named databases through `~/.dbq/config.toml`.
+DBQ is a local CLI for querying named databases through `~/.dbq/config.jsonc`.
 
 DBQ is designed for local agent use:
 
@@ -54,32 +54,37 @@ curl -fsSL https://raw.githubusercontent.com/CasperEngl/dbq/main/install-release
 If no config exists yet, it creates:
 
 ```text
-~/.dbq/config.toml
+~/.dbq/config.jsonc
 ```
 
 ## Configure Databases
 
-Edit `~/.dbq/config.toml`:
+Edit `~/.dbq/config.jsonc`:
 
-```toml
-[security]
-confirmQueries = true
-# 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
-databaseUrlCacheDurationSeconds = 900
-# 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
-databaseStructureCacheDurationSeconds = 3600
-
-[databases.my-project-development]
-engine = "postgres"
-environment = "development"
-readonly = true
-urlCommand = "op read op://Databases/my-project-development/url"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
-# Optional per-database override. Each database URL has its own cache entry and expiry.
-databaseUrlCacheDurationSeconds = 300
-# Optional per-database structure snapshot expiry override.
-databaseStructureCacheDurationSeconds = 900
+```jsonc
+{
+  "security": {
+    "confirmQueries": true,
+    // 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
+    "databaseUrlCacheDurationSeconds": 900,
+    // 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
+    "databaseStructureCacheDurationSeconds": 3600,
+  },
+  "databases": {
+    "my-project-development": {
+      "engine": "postgres",
+      "environment": "development",
+      "readonly": true,
+      "urlCommand": "op read op://Databases/my-project-development/url",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+      // Optional per-database override. Each database URL has its own cache entry and expiry.
+      "databaseUrlCacheDurationSeconds": 300,
+      // Optional per-database structure snapshot expiry override.
+      "databaseStructureCacheDurationSeconds": 900,
+    },
+  },
+}
 ```
 
 DBQ supports either `urlCommand` or `urlEnv`.
@@ -103,18 +108,18 @@ DBQ validates `databaseId`, `engine`, `generatedAt`, namespaces, relations, colu
 
 Common `queryCommand` examples:
 
-```toml
-# PostgreSQL psql
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
+```jsonc
+// PostgreSQL psql
+"queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
 
-# MySQL Shell
-queryCommand = "mysqlsh --uri \"$DBQ_DATABASE_URL\" --sql --execute \"$DBQ_SQL\""
+// MySQL Shell
+"queryCommand": "mysqlsh --uri \"$DBQ_DATABASE_URL\" --sql --execute \"$DBQ_SQL\""
 
-# SQLite, when DBQ_DATABASE_URL is a local database file path
-queryCommand = "sqlite3 -header -csv \"$DBQ_DATABASE_URL\" \"$DBQ_SQL\""
+// SQLite, when DBQ_DATABASE_URL is a local database file path
+"queryCommand": "sqlite3 -header -csv \"$DBQ_DATABASE_URL\" \"$DBQ_SQL\""
 
-# DuckDB, when DBQ_DATABASE_URL is a local database file path
-queryCommand = "duckdb \"$DBQ_DATABASE_URL\" -csv -c \"$DBQ_SQL\""
+// DuckDB, when DBQ_DATABASE_URL is a local database file path
+"queryCommand": "duckdb \"$DBQ_DATABASE_URL\" -csv -c \"$DBQ_SQL\""
 ```
 
 DBQ installs `dbq-describe-postgres` under `$DBQ_HOME/bin` for PostgreSQL structure snapshots. It uses `psql` to run metadata SQL and emit one JSON object:
@@ -224,14 +229,19 @@ from relations_by_schema;
 SQL
 ```
 
-```toml
-[databases.analytics]
-engine = "postgres"
-environment = "development"
-readonly = true
-urlCommand = "op read op://Databases/analytics/url"
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
+```jsonc
+{
+  "databases": {
+    "analytics": {
+      "engine": "postgres",
+      "environment": "development",
+      "readonly": true,
+      "urlCommand": "op read op://Databases/analytics/url",
+      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
+      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
+    },
+  },
+}
 ```
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.

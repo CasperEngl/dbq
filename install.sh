@@ -44,8 +44,8 @@ write_launcher "dbq" "$DBQ_HOME/bin/dbq"
 write_launcher "dbq-confirm" "$DBQ_HOME/bin/dbq-confirm"
 write_launcher "dbq-describe-postgres" "$DBQ_HOME/bin/dbq-describe-postgres"
 
-if [ ! -f "$DBQ_HOME/config.toml" ]; then
-  install -m 0600 "$SCRIPT_DIR/config.example.toml" "$DBQ_HOME/config.toml"
+if [ ! -f "$DBQ_HOME/config.jsonc" ]; then
+  install -m 0600 "$SCRIPT_DIR/config.example.jsonc" "$DBQ_HOME/config.jsonc"
 fi
 
 ENV_NOTE="
@@ -68,5 +68,5 @@ Run the local CLI with:
 
 Edit your database registry:
 
-  $DBQ_HOME/config.toml
+  $DBQ_HOME/config.jsonc
 EOF

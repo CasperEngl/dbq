@@ -2,14 +2,14 @@
 
 Use `psql` for PostgreSQL query execution:
 
-```toml
-queryCommand = "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
+```jsonc
+"queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\""
 ```
 
 Use the installed PostgreSQL describe command:
 
-```toml
-describeCommand = "\"$DBQ_HOME/bin/dbq-describe-postgres\""
+```jsonc
+"describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\""
 ```
 
 The installed command runs this wrapper:

@@ -13,15 +13,15 @@ class Dbq < Formula
   def install
     bin.install "bin/dbq"
     bin.install "bin/dbq-confirm"
-    pkgshare.install "config.example.toml"
+    pkgshare.install "config.example.jsonc"
   end
 
   def caveats
     <<~EOS
       Create your DBQ config:
         mkdir -p ~/.dbq
-        cp #{pkgshare}/config.example.toml ~/.dbq/config.toml
-        chmod 600 ~/.dbq/config.toml
+        cp #{pkgshare}/config.example.jsonc ~/.dbq/config.jsonc
+        chmod 600 ~/.dbq/config.jsonc
 
       Run the local CLI with:
         dbq list
