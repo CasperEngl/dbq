@@ -6,7 +6,7 @@ import { Args, Command, Options } from "@effect/cli";
 import { BunContext } from "@effect/platform-bun";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { Console, Effect, Layer, pipe, Schema } from "effect";
+import { Console, Effect, Layer, Schema } from "effect";
 import pg from "pg";
 import * as z from "zod/v4";
 
@@ -28,12 +28,12 @@ const NonNegativeIntegerSchema = Schema.Number.pipe(
 const DatabaseSchema = Schema.Struct({
   engine: Schema.Literal("postgres"),
   environment: Schema.Literal("development", "production"),
-  readonly: Schema.optionalWith(Schema.Boolean, { default: () => true }),
-  urlCommand: Schema.optional(Schema.NonEmptyString),
-  urlEnv: Schema.optional(Schema.NonEmptyString),
-  databaseUrlCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
-  urlCacheTtlSeconds: Schema.optional(NonNegativeIntegerSchema),
-  databaseStructureCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
+  readonly: Schema.Boolean.pipe(Schema.optionalWith({ default: () => true })),
+  urlCommand: Schema.NonEmptyString.pipe(Schema.optional),
+  urlEnv: Schema.NonEmptyString.pipe(Schema.optional),
+  databaseUrlCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
+  urlCacheTtlSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
+  databaseStructureCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
 }).pipe(
   Schema.filter((database) => database.urlCommand !== undefined || database.urlEnv !== undefined, {
     message: () => "must define urlCommand or urlEnv",
@@ -41,23 +41,24 @@ const DatabaseSchema = Schema.Struct({
 );
 
 const ConfigSchema = Schema.Struct({
-  security: Schema.optionalWith(
-    Schema.Struct({
-      confirmQueries: Schema.optionalWith(Schema.Boolean, {
+  security: Schema.Struct({
+    confirmQueries: Schema.Boolean.pipe(
+      Schema.optionalWith({
         default: () => true,
       }),
-      confirmCommand: Schema.optional(Schema.NonEmptyString),
-      databaseUrlCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
-      urlCacheTtlSeconds: Schema.optional(NonNegativeIntegerSchema),
-      databaseStructureCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
-    }),
-    {
+    ),
+    confirmCommand: Schema.NonEmptyString.pipe(Schema.optional),
+    databaseUrlCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
+    urlCacheTtlSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
+    databaseStructureCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
+  }).pipe(
+    Schema.optionalWith({
       default: () => ({
         confirmQueries: true,
         databaseUrlCacheDurationSeconds: 0,
         databaseStructureCacheDurationSeconds: 0,
       }),
-    },
+    }),
   ),
   databases: Schema.Record({
     key: Schema.NonEmptyString,
@@ -71,16 +72,13 @@ const CachedDatabaseUrlSchema = Schema.Struct({
 });
 
 const UrlCacheFileSchema = Schema.Struct({
-  entries: Schema.optionalWith(
-    Schema.Record({
-      key: Schema.NonEmptyString,
-      value: CachedDatabaseUrlSchema,
-    }),
-    { default: () => ({}) },
-  ),
+  entries: Schema.Record({
+    key: Schema.NonEmptyString,
+    value: CachedDatabaseUrlSchema,
+  }).pipe(Schema.optionalWith({ default: () => ({}) })),
 });
 
-const emptyUrlCacheFile = Schema.decodeUnknownSync(UrlCacheFileSchema)({ entries: {} });
+const emptyUrlCacheFile = UrlCacheFileSchema.pipe(Schema.decodeUnknownSync)({ entries: {} });
 
 const DatabaseColumnRowSchema = Schema.Struct({
   table_schema: Schema.String,
@@ -104,28 +102,22 @@ const DatabaseStructureColumnSchema = Schema.Struct({
   name: Schema.String,
   type: Schema.String,
   nullable: Schema.Boolean,
-  references: Schema.optional(
-    Schema.Struct({
-      schema: Schema.String,
-      table: Schema.String,
-      column: Schema.String,
-    }),
-  ),
+  references: Schema.Struct({
+    schema: Schema.String,
+    table: Schema.String,
+    column: Schema.String,
+  }).pipe(Schema.optional),
 });
 
-const DatabaseStructureForeignKeySchema = Schema.mutable(
-  Schema.Struct({
-    name: Schema.String,
-    columns: Schema.mutable(Schema.Array(Schema.String)),
-    references: Schema.mutable(
-      Schema.Struct({
-        schema: Schema.String,
-        table: Schema.String,
-        columns: Schema.mutable(Schema.Array(Schema.String)),
-      }),
-    ),
-  }),
-);
+const DatabaseStructureForeignKeySchema = Schema.Struct({
+  name: Schema.String,
+  columns: Schema.Array(Schema.String).pipe(Schema.mutable),
+  references: Schema.Struct({
+    schema: Schema.String,
+    table: Schema.String,
+    columns: Schema.Array(Schema.String).pipe(Schema.mutable),
+  }).pipe(Schema.mutable),
+}).pipe(Schema.mutable);
 
 const DatabaseStructureTableSchema = Schema.Struct({
   name: Schema.String,
@@ -151,16 +143,15 @@ const CachedDatabaseStructureSchema = Schema.Struct({
 });
 
 const DatabaseStructureCacheFileSchema = Schema.Struct({
-  entries: Schema.optionalWith(
-    Schema.Record({
-      key: Schema.NonEmptyString,
-      value: CachedDatabaseStructureSchema,
-    }),
-    { default: () => ({}) },
-  ),
+  entries: Schema.Record({
+    key: Schema.NonEmptyString,
+    value: CachedDatabaseStructureSchema,
+  }).pipe(Schema.optionalWith({ default: () => ({}) })),
 });
 
-const emptyDatabaseStructureCacheFile = Schema.decodeUnknownSync(DatabaseStructureCacheFileSchema)({
+const emptyDatabaseStructureCacheFile = DatabaseStructureCacheFileSchema.pipe(
+  Schema.decodeUnknownSync,
+)({
   entries: {},
 });
 
@@ -176,13 +167,10 @@ const LegacyCachedDatabaseStructureSchema = Schema.Struct({
 });
 
 const LegacyDatabaseStructureCacheFileSchema = Schema.Struct({
-  entries: Schema.optionalWith(
-    Schema.Record({
-      key: Schema.NonEmptyString,
-      value: LegacyCachedDatabaseStructureSchema,
-    }),
-    { default: () => ({}) },
-  ),
+  entries: Schema.Record({
+    key: Schema.NonEmptyString,
+    value: LegacyCachedDatabaseStructureSchema,
+  }).pipe(Schema.optionalWith({ default: () => ({}) })),
 });
 
 const queryDatabaseInputSchema = z.object({
@@ -220,7 +208,7 @@ const defaultSecurity = {
 
 class ConfigError extends Schema.TaggedError<ConfigError>()("ConfigError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
+  cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
 class ValidationError extends Schema.TaggedError<ValidationError>()("ValidationError", {
@@ -229,17 +217,17 @@ class ValidationError extends Schema.TaggedError<ValidationError>()("ValidationE
 
 class ConfirmationError extends Schema.TaggedError<ConfirmationError>()("ConfirmationError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
+  cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
 class DatabaseError extends Schema.TaggedError<DatabaseError>()("DatabaseError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
+  cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
 class AuditError extends Schema.TaggedError<AuditError>()("AuditError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
+  cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
 type DbqError = ConfigError | ValidationError | ConfirmationError | DatabaseError | AuditError;
@@ -260,7 +248,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         catch: (cause) => new ConfigError({ message: `Could not parse ${configPath}`, cause }),
       });
 
-      const config = yield* Schema.decodeUnknown(ConfigSchema)(parsedToml).pipe(
+      const config = yield* ConfigSchema.pipe(Schema.decodeUnknown)(parsedToml).pipe(
         Effect.mapError((cause) => new ConfigError({ message: `Invalid ${configPath}`, cause })),
       );
 
@@ -759,13 +747,12 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       return yield* withClient(databaseUrl, (client) =>
         Effect.gen(function* () {
-          const result = yield* pipe(
-            Effect.gen(function* () {
-              yield* pgQuery(client, "begin read only");
-              yield* pgQuery(client, "set local statement_timeout = '5s'");
-              const queryResult = yield* pgQuery(
-                client,
-                `
+          const result = yield* Effect.gen(function* () {
+            yield* pgQuery(client, "begin read only");
+            yield* pgQuery(client, "set local statement_timeout = '5s'");
+            const queryResult = yield* pgQuery(
+              client,
+              `
                   select
                     table_schema,
                     table_name,
@@ -776,10 +763,10 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                   where table_schema not in ('pg_catalog', 'information_schema')
                   order by table_schema, table_name, ordinal_position
                 `,
-              );
-              const foreignKeyResult = yield* pgQuery(
-                client,
-                `
+            );
+            const foreignKeyResult = yield* pgQuery(
+              client,
+              `
                   select
                     tc.constraint_name,
                     tc.table_schema,
@@ -805,10 +792,10 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                     tc.constraint_name,
                     kcu.ordinal_position
                 `,
-              );
-              yield* pgQuery(client, "rollback");
-              return { columns: queryResult, foreignKeys: foreignKeyResult };
-            }),
+            );
+            yield* pgQuery(client, "rollback");
+            return { columns: queryResult, foreignKeys: foreignKeyResult };
+          }).pipe(
             Effect.tap(({ columns }) =>
               writeAuditEntry({
                 auditId,
@@ -836,28 +823,28 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
               ),
             ),
           );
-          const columns = yield* Schema.decodeUnknown(Schema.Array(DatabaseColumnRowSchema))(
-            result.columns.rows,
-          ).pipe(
-            Effect.mapError(
-              (cause) =>
-                new DatabaseError({
-                  message: "Could not decode database structure",
-                  cause,
-                }),
-            ),
-          );
-          const foreignKeys = yield* Schema.decodeUnknown(
-            Schema.Array(DatabaseForeignKeyRowSchema),
-          )(result.foreignKeys.rows).pipe(
-            Effect.mapError(
-              (cause) =>
-                new DatabaseError({
-                  message: "Could not decode database foreign keys",
-                  cause,
-                }),
-            ),
-          );
+          const columns = yield* Schema.Array(DatabaseColumnRowSchema)
+            .pipe(Schema.decodeUnknown)(result.columns.rows)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new DatabaseError({
+                    message: "Could not decode database structure",
+                    cause,
+                  }),
+              ),
+            );
+          const foreignKeys = yield* Schema.Array(DatabaseForeignKeyRowSchema)
+            .pipe(Schema.decodeUnknown)(result.foreignKeys.rows)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new DatabaseError({
+                    message: "Could not decode database foreign keys",
+                    cause,
+                  }),
+              ),
+            );
           const databaseStructure = buildDatabaseStructure(
             databaseId,
             columns,
@@ -909,17 +896,16 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       return yield* withClient(databaseUrl, (client) =>
         Effect.gen(function* () {
-          const result = yield* pipe(
-            Effect.gen(function* () {
-              yield* pgQuery(client, "begin read only");
-              yield* pgQuery(client, "set local statement_timeout = '5s'");
-              const queryResult = yield* pgQuery(
-                client,
-                `select * from (${sql}) as dbq_result limit ${maxRows}`,
-              );
-              yield* pgQuery(client, "rollback");
-              return queryResult;
-            }),
+          const result = yield* Effect.gen(function* () {
+            yield* pgQuery(client, "begin read only");
+            yield* pgQuery(client, "set local statement_timeout = '5s'");
+            const queryResult = yield* pgQuery(
+              client,
+              `select * from (${sql}) as dbq_result limit ${maxRows}`,
+            );
+            yield* pgQuery(client, "rollback");
+            return queryResult;
+          }).pipe(
             Effect.tap((queryResult) =>
               writeAuditEntry({
                 auditId,
@@ -1169,35 +1155,39 @@ function hashCacheKey(cacheKey: string) {
 }
 
 function parseUrlCache(contents: string) {
-  return Schema.decodeUnknown(Schema.parseJson(UrlCacheFileSchema))(contents).pipe(
-    Effect.catchAll(() => Effect.succeed(emptyUrlCacheFile)),
-  );
+  return Schema.parseJson(UrlCacheFileSchema)
+    .pipe(Schema.decodeUnknown)(contents)
+    .pipe(Effect.catchAll(() => Effect.succeed(emptyUrlCacheFile)));
 }
 
 function parseDatabaseStructureCache(contents: string) {
-  return Schema.decodeUnknown(Schema.parseJson(DatabaseStructureCacheFileSchema))(contents).pipe(
-    Effect.catchAll(() =>
-      Schema.decodeUnknown(Schema.parseJson(LegacyDatabaseStructureCacheFileSchema))(contents).pipe(
-        Effect.map((legacyCache) => ({
-          entries: Object.fromEntries(
-            Object.entries(legacyCache.entries).map(([cacheKey, cachedStructure]) => [
-              cacheKey,
-              {
-                databaseStructure: buildDatabaseStructure(
-                  cachedStructure.databaseStructure.databaseId,
-                  cachedStructure.databaseStructure.columns,
-                  [],
-                  cachedStructure.databaseStructure.generatedAt,
-                ),
-                expiresAt: cachedStructure.expiresAt,
-              },
-            ]),
+  return Schema.parseJson(DatabaseStructureCacheFileSchema)
+    .pipe(Schema.decodeUnknown)(contents)
+    .pipe(
+      Effect.catchAll(() =>
+        Schema.parseJson(LegacyDatabaseStructureCacheFileSchema)
+          .pipe(Schema.decodeUnknown)(contents)
+          .pipe(
+            Effect.map((legacyCache) => ({
+              entries: Object.fromEntries(
+                Object.entries(legacyCache.entries).map(([cacheKey, cachedStructure]) => [
+                  cacheKey,
+                  {
+                    databaseStructure: buildDatabaseStructure(
+                      cachedStructure.databaseStructure.databaseId,
+                      cachedStructure.databaseStructure.columns,
+                      [],
+                      cachedStructure.databaseStructure.generatedAt,
+                    ),
+                    expiresAt: cachedStructure.expiresAt,
+                  },
+                ]),
+              ),
+            })),
+            Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
           ),
-        })),
-        Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
       ),
-    ),
-  );
+    );
 }
 
 function buildDatabaseStructure(
