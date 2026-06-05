@@ -82,7 +82,7 @@ const UrlCacheFileSchema = Schema.Struct({
 
 const emptyUrlCacheFile = Schema.decodeUnknownSync(UrlCacheFileSchema)({ entries: {} });
 
-const DatabaseColumnSchema = Schema.Struct({
+const DatabaseColumnRowSchema = Schema.Struct({
   table_schema: Schema.String,
   table_name: Schema.String,
   column_name: Schema.String,
@@ -90,10 +90,27 @@ const DatabaseColumnSchema = Schema.Struct({
   is_nullable: Schema.String,
 });
 
+const DatabaseStructureColumnSchema = Schema.Struct({
+  name: Schema.String,
+  type: Schema.String,
+  nullable: Schema.Boolean,
+});
+
+const DatabaseStructureTableSchema = Schema.Struct({
+  name: Schema.String,
+  columns: Schema.Array(DatabaseStructureColumnSchema),
+});
+
+const DatabaseStructureSchemaEntrySchema = Schema.Struct({
+  name: Schema.String,
+  tables: Schema.Array(DatabaseStructureTableSchema),
+});
+
 const DatabaseStructureSchema = Schema.Struct({
+  formatVersion: Schema.Literal(1),
   databaseId: Schema.NonEmptyString,
   generatedAt: NonNegativeIntegerSchema,
-  columns: Schema.Array(DatabaseColumnSchema),
+  schemas: Schema.Array(DatabaseStructureSchemaEntrySchema),
 });
 
 const CachedDatabaseStructureSchema = Schema.Struct({
@@ -115,6 +132,27 @@ const emptyDatabaseStructureCacheFile = Schema.decodeUnknownSync(DatabaseStructu
   entries: {},
 });
 
+const LegacyDatabaseStructureSchema = Schema.Struct({
+  databaseId: Schema.NonEmptyString,
+  generatedAt: NonNegativeIntegerSchema,
+  columns: Schema.Array(DatabaseColumnRowSchema),
+});
+
+const LegacyCachedDatabaseStructureSchema = Schema.Struct({
+  databaseStructure: LegacyDatabaseStructureSchema,
+  expiresAt: Schema.NullOr(NonNegativeIntegerSchema),
+});
+
+const LegacyDatabaseStructureCacheFileSchema = Schema.Struct({
+  entries: Schema.optionalWith(
+    Schema.Record({
+      key: Schema.NonEmptyString,
+      value: LegacyCachedDatabaseStructureSchema,
+    }),
+    { default: () => ({}) },
+  ),
+});
+
 const queryDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   sql: z.string().min(1),
@@ -124,6 +162,7 @@ const queryDatabaseInputSchema = z.object({
 const describeDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   refresh: z.boolean().default(false),
+  format: z.enum(["compact", "json"]).default("compact"),
 });
 
 type Config = typeof ConfigSchema.Type;
@@ -132,6 +171,8 @@ type Security = NonNullable<Config["security"]>;
 type QueryDatabaseInput = z.infer<typeof queryDatabaseInputSchema>;
 type DescribeDatabaseInput = z.infer<typeof describeDatabaseInputSchema>;
 type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
+type DatabaseColumnRow = typeof DatabaseColumnRowSchema.Type;
+type DatabaseStructureColumn = typeof DatabaseStructureColumnSchema.Type;
 type DatabaseStructure = typeof DatabaseStructureSchema.Type;
 type CachedDatabaseStructure = typeof CachedDatabaseStructureSchema.Type;
 
@@ -623,7 +664,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (
       input: DescribeDatabaseInput,
     ) {
-      const { databaseId, refresh } = input;
+      const { databaseId, refresh, format } = input;
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
       const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
@@ -637,12 +678,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       const formatDescribeResponse = (
         databaseStructure: DatabaseStructure,
         databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
-      ) => ({
-        databaseId,
-        databaseStructureCacheStatus,
-        databaseStructureGeneratedAt: new Date(databaseStructure.generatedAt).toISOString(),
-        columns: databaseStructure.columns,
-      });
+      ) => formatDatabaseStructure(databaseStructure, databaseStructureCacheStatus, format);
 
       if (!refresh) {
         const memoryCachedDatabaseStructure = getCachedDatabaseStructure(databaseStructureCacheKey);
@@ -655,7 +691,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             startedAt,
             durationMs: Date.now() - startedAt,
             success: true,
-            rowCount: memoryCachedDatabaseStructure.columns.length,
+            rowCount: countDatabaseStructureColumns(memoryCachedDatabaseStructure),
             cacheHit: true,
           });
           return formatDescribeResponse(memoryCachedDatabaseStructure, "hit");
@@ -673,7 +709,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             startedAt,
             durationMs: Date.now() - startedAt,
             success: true,
-            rowCount: diskCachedDatabaseStructure.databaseStructure.columns.length,
+            rowCount: countDatabaseStructureColumns(diskCachedDatabaseStructure.databaseStructure),
             cacheHit: true,
           });
           return formatDescribeResponse(diskCachedDatabaseStructure.databaseStructure, "hit");
@@ -731,7 +767,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
               ),
             ),
           );
-          const columns = yield* Schema.decodeUnknown(Schema.Array(DatabaseColumnSchema))(
+          const columns = yield* Schema.decodeUnknown(Schema.Array(DatabaseColumnRowSchema))(
             result.rows,
           ).pipe(
             Effect.mapError(
@@ -742,11 +778,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                 }),
             ),
           );
-          const databaseStructure = {
-            databaseId,
-            generatedAt: Date.now(),
-            columns,
-          } satisfies DatabaseStructure;
+          const databaseStructure = buildDatabaseStructure(databaseId, columns, Date.now());
 
           setCachedDatabaseStructure(
             databaseStructureCacheKey,
@@ -867,15 +899,15 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
     "describe_database",
     {
       description:
-        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure.",
+        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output.",
       inputSchema: describeDatabaseInputSchema,
     },
-    (input) =>
-      runDbqForMcp(
-        dbq
-          .describeDatabase(describeDatabaseInputSchema.parse(input))
-          .pipe(Effect.map(jsonResponse)),
-      ),
+    (input) => {
+      const parsedInput = describeDatabaseInputSchema.parse(input);
+      const response = parsedInput.format === "compact" ? compactResponse : jsonResponse;
+
+      return runDbqForMcp(dbq.describeDatabase(parsedInput).pipe(Effect.map(response)));
+    },
   );
 
   server.registerTool(
@@ -912,14 +944,18 @@ const describeCommand = Command.make(
     refresh: Options.boolean("refresh").pipe(
       Options.withDescription("Bypass cached database structure and update the cache"),
     ),
+    format: Options.choice("format", ["compact", "json"] as const).pipe(
+      Options.withDefault("compact"),
+      Options.withDescription("Output compact token-efficient text or grouped JSON"),
+    ),
   },
-  ({ databaseId, refresh }) =>
+  ({ databaseId, refresh, format }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
       const result = yield* dbq.describeDatabase(
-        describeDatabaseInputSchema.parse({ databaseId, refresh }),
+        describeDatabaseInputSchema.parse({ databaseId, refresh, format }),
       );
-      yield* Console.log(JSON.stringify(result, null, 2));
+      yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
     }),
 ).pipe(Command.withDescription("Describe schemas, tables, and columns"));
 
@@ -1041,8 +1077,145 @@ function parseUrlCache(contents: string) {
 
 function parseDatabaseStructureCache(contents: string) {
   return Schema.decodeUnknown(Schema.parseJson(DatabaseStructureCacheFileSchema))(contents).pipe(
-    Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
+    Effect.catchAll(() =>
+      Schema.decodeUnknown(Schema.parseJson(LegacyDatabaseStructureCacheFileSchema))(contents).pipe(
+        Effect.map((legacyCache) => ({
+          entries: Object.fromEntries(
+            Object.entries(legacyCache.entries).map(([cacheKey, cachedStructure]) => [
+              cacheKey,
+              {
+                databaseStructure: buildDatabaseStructure(
+                  cachedStructure.databaseStructure.databaseId,
+                  cachedStructure.databaseStructure.columns,
+                  cachedStructure.databaseStructure.generatedAt,
+                ),
+                expiresAt: cachedStructure.expiresAt,
+              },
+            ]),
+          ),
+        })),
+        Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
+      ),
+    ),
   );
+}
+
+function buildDatabaseStructure(
+  databaseId: string,
+  rows: ReadonlyArray<DatabaseColumnRow>,
+  generatedAt: number,
+) {
+  const schemas = new Map<string, Map<string, Array<DatabaseStructureColumn>>>();
+
+  for (const row of rows) {
+    let tables = schemas.get(row.table_schema);
+
+    if (!tables) {
+      tables = new Map();
+      schemas.set(row.table_schema, tables);
+    }
+
+    let columns = tables.get(row.table_name);
+
+    if (!columns) {
+      columns = [];
+      tables.set(row.table_name, columns);
+    }
+
+    columns.push({
+      name: row.column_name,
+      type: row.data_type,
+      nullable: row.is_nullable === "YES",
+    });
+  }
+
+  return {
+    formatVersion: 1,
+    databaseId,
+    generatedAt,
+    schemas: Array.from(schemas, ([schemaName, tables]) => ({
+      name: schemaName,
+      tables: Array.from(tables, ([tableName, columns]) => ({
+        name: tableName,
+        columns,
+      })),
+    })),
+  } satisfies DatabaseStructure;
+}
+
+function countDatabaseStructureColumns(databaseStructure: DatabaseStructure) {
+  return databaseStructure.schemas.reduce(
+    (schemaCount, schemaEntry) =>
+      schemaCount +
+      schemaEntry.tables.reduce((tableCount, table) => tableCount + table.columns.length, 0),
+    0,
+  );
+}
+
+function formatDatabaseStructure(
+  databaseStructure: DatabaseStructure,
+  databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
+  format: DescribeDatabaseInput["format"],
+) {
+  const databaseStructureGeneratedAt = new Date(databaseStructure.generatedAt).toISOString();
+
+  if (format === "json") {
+    return {
+      databaseId: databaseStructure.databaseId,
+      databaseStructureCacheStatus,
+      databaseStructureGeneratedAt,
+      formatVersion: databaseStructure.formatVersion,
+      schemas: databaseStructure.schemas,
+    };
+  }
+
+  return renderCompactDatabaseStructure(databaseStructure, databaseStructureGeneratedAt);
+}
+
+function renderCompactDatabaseStructure(
+  databaseStructure: DatabaseStructure,
+  databaseStructureGeneratedAt: string,
+) {
+  const lines = [
+    `database ${databaseStructure.databaseId}`,
+    `generated_at ${databaseStructureGeneratedAt}`,
+    `format_version ${databaseStructure.formatVersion}`,
+  ];
+
+  for (const schemaEntry of databaseStructure.schemas) {
+    lines.push("", `schema ${schemaEntry.name}`);
+
+    for (const table of schemaEntry.tables) {
+      lines.push(`table ${table.name}: ${table.columns.map(renderCompactColumn).join(", ")}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function renderCompactColumn(column: DatabaseStructureColumn) {
+  return `${column.name} ${normalizeDatabaseType(column.type)}${column.nullable ? "?" : ""}`;
+}
+
+function normalizeDatabaseType(type: string) {
+  switch (type) {
+    case "boolean":
+      return "bool";
+    case "character varying":
+      return "varchar";
+    case "double precision":
+      return "float8";
+    case "integer":
+      return "int";
+    case "timestamp without time zone":
+      return "ts";
+    case "timestamp with time zone":
+      return "tstz";
+    case "USER-DEFINED":
+      return "enum";
+    default:
+      return type;
+  }
 }
 
 function runDbqForMcp<A>(effect: Effect.Effect<A, DbqError>) {
@@ -1054,6 +1227,19 @@ function jsonResponse(value: unknown) {
     {
       type: "text",
       text: JSON.stringify(value, null, 2),
+    },
+  ] satisfies Array<{ type: "text"; text: string }>;
+
+  return {
+    content,
+  };
+}
+
+function compactResponse(value: unknown) {
+  const content = [
+    {
+      type: "text",
+      text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
     },
   ] satisfies Array<{ type: "text"; text: string }>;
 

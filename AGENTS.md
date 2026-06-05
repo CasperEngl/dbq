@@ -24,6 +24,8 @@ When updating the DBQ agent skill, edit only the project-local skill at `skills/
 
 Do not edit installed/global skill copies directly, including files under `~/.agents/skills/`, `~/.claude/skills/`, or `~/.config/opencode/skills/`. After the project-local skill is updated, tell the user to install or copy the update into their global opencode configuration if they want it available outside this repo.
 
+Keep the canonical DBQ skill focused on the current state and recommended behavior. Do not document in-between migration steps, removed behavior, or what no longer exists unless the current skill user must know it to operate DBQ correctly.
+
 When using Effect `Schema.TaggedError` classes, yield tagged errors directly:
 
 ```ts

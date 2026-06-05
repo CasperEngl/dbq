@@ -100,11 +100,12 @@ Use the same binary locally:
 ```bash
 dbq list
 dbq describe my-project-development
+dbq describe my-project-development --format json
 dbq describe my-project-development --refresh
 dbq query my-project-development 'select * from users limit 10'
 ```
 
-`query` accepts `--max-rows` and defaults to 100 rows.
+`describe` defaults to `--format compact`, a token-efficient line format for agents that omits cache status. Use `--format json` for grouped structured output with cache details. `query` accepts `--max-rows` and defaults to 100 rows.
 
 ## MCP Tools
 

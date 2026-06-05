@@ -9,7 +9,7 @@ DBQ queries named Postgres databases through `~/.dbq/config.toml`. It keeps data
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire schema/table/column snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the snapshot.
+DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire schema/table/column snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` only when fresh database structure is needed.
 
 ## Install
 
@@ -38,13 +38,14 @@ Use the CLI:
 ```bash
 dbq list
 dbq describe app-development
+dbq describe app-development --format json
 dbq describe app-development --refresh
 dbq query app-development 'select * from users limit 10'
 dbq query app-production-readonly 'select now()' --max-rows 10
 dbq mcp
 ```
 
-`query` requires quoted SQL, allows only `SELECT`/`WITH`, rejects semicolons, and defaults to `--max-rows 100`.
+`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL, allows only `SELECT`/`WITH`, rejects semicolons, and defaults to `--max-rows 100`.
 
 ## Querying Rules
 
@@ -52,7 +53,8 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 
 - Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
 - Use the `dbq` CLI when MCP tools are unavailable or unclear.
-- Before writing SQL against an unfamiliar database, call `describe_database` once and reuse that database structure during the task.
+- Before writing SQL against an unfamiliar database, call `describe_database` once using the default compact format and reuse that database structure during the task.
+- Use `format: "json"` or `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
 - Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
 - Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
 - Do not print, inspect, or validate DBQ-managed database URLs outside DBQ.
