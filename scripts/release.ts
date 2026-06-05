@@ -60,7 +60,7 @@ const homebrewCommand = CliCommand.make(
     noCommit: noCommitOption,
     push: pushOption,
   },
-  ({ noCommit, push, version }) => updateHomebrewFormula(version, { commit: !noCommit, push }),
+  ({ noCommit, push, version }) => updateHomebrewFormula(version, !noCommit, push),
 ).pipe(CliCommand.withDescription("Update the Homebrew formula from the published asset"));
 
 const notesCommand = CliCommand.make(
@@ -70,8 +70,7 @@ const notesCommand = CliCommand.make(
   },
   ({ version }) =>
     Effect.gen(function* () {
-      const normalizedVersion = yield* normalizeVersion(version);
-      const notes = yield* releaseNotes(normalizedVersion);
+      const notes = yield* releaseNotes(formatVersion(yield* parseVersion(version)));
       yield* Console.log(notes);
     }),
 ).pipe(CliCommand.withDescription("Print changelog release notes for a version"));
@@ -184,9 +183,7 @@ const buildRelease = Effect.fn("buildRelease")(function* () {
   yield* installFile(join(rootDirectory, "README.md"), join(packageDirectory, "README.md"), 0o644);
 
   yield* renamePath(packageDirectory, finalPackageDirectory);
-  yield* runInherited("tar", ["-czf", `${packageName}.tar.gz`, packageName], {
-    cwd: distDirectory,
-  });
+  yield* runInherited("tar", ["-czf", `${packageName}.tar.gz`, packageName], distDirectory);
 
   yield* Console.log(archivePath);
   return archivePath;
@@ -212,9 +209,10 @@ const prepareRelease = Effect.fn("prepareRelease")(function* (versionSpec: strin
 
 const updateHomebrewFormula = Effect.fn("updateHomebrewFormula")(function* (
   versionInput: string,
-  options: { commit: boolean; push: boolean },
+  commit: boolean,
+  push: boolean,
 ) {
-  const version = yield* normalizeVersion(versionInput);
+  const version = formatVersion(yield* parseVersion(versionInput));
   const tag = `v${version}`;
 
   yield* assertCleanWorktree("Homebrew formula update");
@@ -227,27 +225,34 @@ const updateHomebrewFormula = Effect.fn("updateHomebrewFormula")(function* (
 
   yield* updateFormula(version, sha256);
 
-  if (options.commit) {
+  if (commit) {
     yield* gitInherited(["add", "homebrew/dbq.rb"]);
 
-    const hasStagedChanges = yield* hasGitChanges(["diff", "--cached", "--quiet"]);
+    const diffExitCode = yield* processCommand("git", ["diff", "--cached", "--quiet"]).pipe(
+      ProcessCommand.stderr("inherit"),
+      ProcessCommand.exitCode,
+    );
 
-    if (hasStagedChanges) {
+    if (diffExitCode === 1) {
       yield* gitInherited(["commit", "-m", `Update Homebrew formula for ${tag}`]);
-    } else {
+    } else if (diffExitCode === 0) {
       yield* Console.log(`Homebrew formula already committed for ${tag}.`);
+    } else {
+      return yield* new ReleaseError({
+        message: `git diff --cached --quiet exited with code ${diffExitCode}.`,
+      });
     }
   }
 
   yield* Console.log(["Homebrew formula SHA256:", `  ${sha256}`].join("\n"));
 
-  if (options.push) {
+  if (push) {
     const branch = yield* gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]);
     yield* gitInherited(["push", "origin", branch]);
     return;
   }
 
-  if (options.commit) {
+  if (commit) {
     const branch = yield* gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]);
     yield* Console.log(
       ["", "Publish the formula update with:", `  git push origin ${branch}`].join("\n"),
@@ -352,9 +357,9 @@ const assertCleanWorktree = Effect.fn("assertCleanWorktree")(function* (label: s
 const runInherited = Effect.fn("runInherited")(function* (
   command: string,
   args: ReadonlyArray<string>,
-  options: { cwd?: string } = {},
+  cwd = rootDirectory,
 ) {
-  const exitCode = yield* processCommand(command, args, options).pipe(
+  const exitCode = yield* processCommand(command, args, cwd).pipe(
     ProcessCommand.stdout("inherit"),
     ProcessCommand.stderr("inherit"),
     ProcessCommand.exitCode,
@@ -370,41 +375,16 @@ const runInherited = Effect.fn("runInherited")(function* (
 const runOutput = Effect.fn("runOutput")(function* (
   command: string,
   args: ReadonlyArray<string>,
-  options: { cwd?: string } = {},
+  cwd = rootDirectory,
 ) {
-  return (yield* ProcessCommand.string(processCommand(command, args, options))).trim();
+  return (yield* ProcessCommand.string(processCommand(command, args, cwd))).trim();
 });
 
 const gitOutput = (args: ReadonlyArray<string>) => runOutput("git", args);
 const gitInherited = (args: ReadonlyArray<string>) => runInherited("git", args);
 
-const hasGitChanges = Effect.fn("hasGitChanges")(function* (args: ReadonlyArray<string>) {
-  const exitCode = yield* processCommand("git", args).pipe(
-    ProcessCommand.stderr("inherit"),
-    ProcessCommand.exitCode,
-  );
-
-  if (exitCode === 0) {
-    return false;
-  }
-
-  if (exitCode === 1) {
-    return true;
-  }
-
-  return yield* new ReleaseError({
-    message: `git ${args.join(" ")} exited with code ${exitCode}.`,
-  });
-});
-
-function processCommand(
-  command: string,
-  args: ReadonlyArray<string>,
-  options: { cwd?: string } = {},
-) {
-  return ProcessCommand.make(command, ...args).pipe(
-    ProcessCommand.workingDirectory(options.cwd ?? rootDirectory),
-  );
+function processCommand(command: string, args: ReadonlyArray<string>, cwd = rootDirectory) {
+  return ProcessCommand.make(command, ...args).pipe(ProcessCommand.workingDirectory(cwd));
 }
 
 const resolveNextVersion = Effect.fn("resolveNextVersion")(function* (
@@ -427,7 +407,7 @@ const resolveNextVersion = Effect.fn("resolveNextVersion")(function* (
         patch: 0,
       };
     default: {
-      const explicitVersion = yield* parseVersion(spec.replace(/^v/, ""));
+      const explicitVersion = yield* parseVersion(spec);
 
       if (compareVersions(explicitVersion, currentVersion) < 0) {
         return yield* new ReleaseError({
@@ -441,7 +421,8 @@ const resolveNextVersion = Effect.fn("resolveNextVersion")(function* (
 });
 
 const parseVersion = Effect.fn("parseVersion")(function* (value: string) {
-  const match = versionPattern.exec(value);
+  const normalizedVersion = value.replace(/^v/, "");
+  const match = versionPattern.exec(normalizedVersion);
 
   if (!match) {
     return yield* new ReleaseError({ message: `Expected stable semver x.y.z, got ${value}.` });
@@ -452,16 +433,6 @@ const parseVersion = Effect.fn("parseVersion")(function* (value: string) {
     minor: Number(match[2]),
     patch: Number(match[3]),
   };
-});
-
-const normalizeVersion = Effect.fn("normalizeVersion")(function* (value: string) {
-  const version = value.replace(/^v/, "");
-
-  if (!versionPattern.test(version)) {
-    return yield* new ReleaseError({ message: `Expected stable semver x.y.z, got ${value}.` });
-  }
-
-  return version;
 });
 
 function compareVersions(left: Version, right: Version) {
@@ -568,10 +539,6 @@ function sha256Bytes(bytes: Uint8Array) {
 const exit = await Effect.runPromiseExit(runCli(Bun.argv).pipe(Effect.provide(BunContext.layer)));
 
 if (exit._tag === "Failure") {
-  console.error(formatCause(exit.cause));
+  console.error(Cause.pretty(exit.cause, { renderErrorCause: true }));
   process.exitCode = 1;
-}
-
-function formatCause(cause: Cause.Cause<unknown>) {
-  return Cause.pretty(cause, { renderErrorCause: true });
 }
