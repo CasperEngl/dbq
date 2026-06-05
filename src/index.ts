@@ -4,11 +4,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Args, Command, Options } from "@effect/cli";
 import { BunContext } from "@effect/platform-bun";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Console, Effect, Layer, Schema } from "effect";
 import pg from "pg";
-import * as z from "zod/v4";
 
 const { Client } = pg;
 
@@ -25,20 +22,27 @@ const NonNegativeIntegerSchema = Schema.Number.pipe(
   Schema.filter((value) => value >= 0),
 );
 
-const DatabaseSchema = Schema.Struct({
+const DatabaseBaseSchema = Schema.Struct({
   engine: Schema.NonEmptyString,
   environment: Schema.Literal("development", "production"),
   readonly: Schema.Boolean.pipe(Schema.optionalWith({ default: () => true })),
-  urlCommand: Schema.NonEmptyString.pipe(Schema.optional),
-  urlEnv: Schema.NonEmptyString.pipe(Schema.optional),
   queryCommand: Schema.NonEmptyString.pipe(Schema.optional),
   databaseUrlCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
   urlCacheTtlSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
   databaseStructureCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
-}).pipe(
-  Schema.filter((database) => database.urlCommand !== undefined || database.urlEnv !== undefined, {
-    message: () => "must define urlCommand or urlEnv",
-  }),
+});
+
+const DatabaseSchema = DatabaseBaseSchema.pipe(
+  Schema.extend(
+    Schema.Union(
+      Schema.Struct({
+        urlCommand: Schema.NonEmptyString,
+      }),
+      Schema.Struct({
+        urlEnv: Schema.NonEmptyString,
+      }),
+    ),
+  ),
 );
 
 const ConfigSchema = Schema.Struct({
@@ -160,24 +164,20 @@ const emptyDatabaseStructureCacheFile = DatabaseStructureCacheFileSchema.pipe(
   entries: {},
 });
 
-const queryDatabaseInputSchema = z.object({
-  databaseId: z.string().min(1),
-  sql: z.string().min(1),
-});
-
-const describeDatabaseInputSchema = z.object({
-  databaseId: z.string().min(1),
-  refresh: z.boolean().default(false),
-  format: z.enum(["compact", "json"]).default("compact"),
-  namespace: z.string().min(1).optional(),
-  relations: z.array(z.string().min(1)).optional(),
-});
-
 type Config = typeof ConfigSchema.Type;
 type Database = typeof DatabaseSchema.Type;
 type Security = NonNullable<Config["security"]>;
-type QueryDatabaseInput = z.infer<typeof queryDatabaseInputSchema>;
-type DescribeDatabaseInput = z.infer<typeof describeDatabaseInputSchema>;
+type QueryDatabaseInput = {
+  databaseId: string;
+  sql: string;
+};
+type DescribeDatabaseInput = {
+  databaseId: string;
+  refresh: boolean;
+  format: "compact" | "json";
+  namespace?: string;
+  relations?: ReadonlyArray<string>;
+};
 type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
 type DatabaseColumnRow = typeof DatabaseColumnRowSchema.Type;
 type DatabaseForeignKeyRow = typeof DatabaseForeignKeyRowSchema.Type;
@@ -215,8 +215,6 @@ class AuditError extends Schema.TaggedError<AuditError>()("AuditError", {
   message: Schema.String,
   cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
-
-type DbqError = ConfigError | ValidationError | ConfirmationError | DatabaseError | AuditError;
 
 class Dbq extends Effect.Service<Dbq>()("Dbq", {
   sync: () => {
@@ -273,12 +271,6 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       if (!database) {
         return yield* new ValidationError({
           message: `Unknown database: ${databaseId}`,
-        });
-      }
-
-      if (!database.urlCommand && !database.urlEnv) {
-        return yield* new ValidationError({
-          message: `Database ${databaseId} must define urlCommand or urlEnv`,
         });
       }
 
@@ -490,93 +482,102 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         security.databaseUrlCacheDurationSeconds ??
         security.urlCacheTtlSeconds ??
         0;
-      const cacheKey = `${databaseId}:${database.urlEnv ?? ""}:${database.urlCommand ?? ""}`;
+      if ("urlCommand" in database) {
+        const urlCommand = database.urlCommand;
+        const cacheKey = `${databaseId}::${urlCommand}`;
+        const cachedDatabaseUrl = getCachedDatabaseUrl(cacheKey);
+
+        if (cachedDatabaseUrl) {
+          return cachedDatabaseUrl;
+        }
+
+        const diskCacheKey = hashCacheKey(cacheKey);
+        const diskCachedDatabaseUrl =
+          databaseUrlCacheDurationSeconds > 0
+            ? yield* readDiskCachedDatabaseUrl(diskCacheKey)
+            : undefined;
+
+        if (diskCachedDatabaseUrl) {
+          setCachedDatabaseUrl(cacheKey, diskCachedDatabaseUrl, databaseUrlCacheDurationSeconds);
+          return diskCachedDatabaseUrl;
+        }
+
+        const processResult = Bun.spawn(["sh", "-lc", urlCommand], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [
+            Effect.tryPromise({
+              try: () => new Response(processResult.stdout).text(),
+              catch: (cause) =>
+                new ConfigError({
+                  message: "Could not read urlCommand stdout",
+                  cause,
+                }),
+            }),
+            Effect.tryPromise({
+              try: () => new Response(processResult.stderr).text(),
+              catch: (cause) =>
+                new ConfigError({
+                  message: "Could not read urlCommand stderr",
+                  cause,
+                }),
+            }),
+            Effect.tryPromise({
+              try: () => processResult.exited,
+              catch: (cause) =>
+                new ConfigError({
+                  message: "urlCommand did not exit cleanly",
+                  cause,
+                }),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        if (exitCode !== 0) {
+          return yield* new ConfigError({
+            message: stderr.trim() || `urlCommand exited with code ${exitCode}`,
+          });
+        }
+
+        const databaseUrl = stdout.trim();
+
+        if (!databaseUrl) {
+          return yield* new ConfigError({
+            message: "urlCommand returned an empty database URL",
+          });
+        }
+
+        setCachedDatabaseUrl(cacheKey, databaseUrl, databaseUrlCacheDurationSeconds);
+        yield* writeDiskCachedDatabaseUrl(
+          diskCacheKey,
+          databaseUrl,
+          databaseUrlCacheDurationSeconds,
+        );
+        return databaseUrl;
+      }
+
+      const urlEnv = database.urlEnv;
+      const cacheKey = `${databaseId}:${urlEnv}:`;
       const cachedDatabaseUrl = getCachedDatabaseUrl(cacheKey);
 
       if (cachedDatabaseUrl) {
         return cachedDatabaseUrl;
       }
 
-      if (database.urlEnv) {
-        const value = process.env[database.urlEnv];
+      const value = process.env[urlEnv];
 
-        if (!value) {
-          return yield* new ConfigError({
-            message: `Missing environment variable: ${database.urlEnv}`,
-          });
-        }
-
-        setCachedDatabaseUrl(cacheKey, value, databaseUrlCacheDurationSeconds);
-        return value;
-      }
-
-      if (!database.urlCommand) {
-        return yield* new ConfigError({ message: "Missing urlCommand" });
-      }
-
-      const diskCacheKey = hashCacheKey(cacheKey);
-      const diskCachedDatabaseUrl =
-        databaseUrlCacheDurationSeconds > 0
-          ? yield* readDiskCachedDatabaseUrl(diskCacheKey)
-          : undefined;
-
-      if (diskCachedDatabaseUrl) {
-        setCachedDatabaseUrl(cacheKey, diskCachedDatabaseUrl, databaseUrlCacheDurationSeconds);
-        return diskCachedDatabaseUrl;
-      }
-
-      const processResult = Bun.spawn(["sh", "-lc", database.urlCommand], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      const [stdout, stderr, exitCode] = yield* Effect.all(
-        [
-          Effect.tryPromise({
-            try: () => new Response(processResult.stdout).text(),
-            catch: (cause) =>
-              new ConfigError({
-                message: "Could not read urlCommand stdout",
-                cause,
-              }),
-          }),
-          Effect.tryPromise({
-            try: () => new Response(processResult.stderr).text(),
-            catch: (cause) =>
-              new ConfigError({
-                message: "Could not read urlCommand stderr",
-                cause,
-              }),
-          }),
-          Effect.tryPromise({
-            try: () => processResult.exited,
-            catch: (cause) =>
-              new ConfigError({
-                message: "urlCommand did not exit cleanly",
-                cause,
-              }),
-          }),
-        ],
-        { concurrency: "unbounded" },
-      );
-
-      if (exitCode !== 0) {
+      if (!value) {
         return yield* new ConfigError({
-          message: stderr.trim() || `urlCommand exited with code ${exitCode}`,
+          message: `Missing environment variable: ${urlEnv}`,
         });
       }
 
-      const databaseUrl = stdout.trim();
-
-      if (!databaseUrl) {
-        return yield* new ConfigError({
-          message: "urlCommand returned an empty database URL",
-        });
-      }
-
-      setCachedDatabaseUrl(cacheKey, databaseUrl, databaseUrlCacheDurationSeconds);
-      yield* writeDiskCachedDatabaseUrl(diskCacheKey, databaseUrl, databaseUrlCacheDurationSeconds);
-      return databaseUrl;
+      setCachedDatabaseUrl(cacheKey, value, databaseUrlCacheDurationSeconds);
+      return value;
     });
 
     const confirmQuery = Effect.fn("Dbq.confirmQuery")(function* (
@@ -719,7 +720,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         engine: database.engine,
         environment: database.environment,
         readonly: database.readonly,
-        secretResolver: database.urlCommand ? "urlCommand" : "urlEnv",
+        secretResolver: "urlCommand" in database ? "urlCommand" : "urlEnv",
       }));
 
       return { databases };
@@ -734,7 +735,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       if (database.queryCommand) {
         return yield* new ValidationError({
-          message: `No DBQ metadata adapter is available for ${databaseId}; run a metadata query with query_database instead.`,
+          message: `No DBQ metadata adapter is available for ${databaseId}; run a metadata query with dbq query instead.`,
         });
       }
 
@@ -763,7 +764,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           yield* writeAuditEntry({
             auditId,
             databaseId,
-            operation: "describe_database",
+            operation: "describe",
             startedAt,
             durationMs: Date.now() - startedAt,
             success: true,
@@ -781,7 +782,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           yield* writeAuditEntry({
             auditId,
             databaseId,
-            operation: "describe_database",
+            operation: "describe",
             startedAt,
             durationMs: Date.now() - startedAt,
             success: true,
@@ -847,7 +848,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
               writeAuditEntry({
                 auditId,
                 databaseId,
-                operation: "describe_database",
+                operation: "describe",
                 startedAt,
                 durationMs: Date.now() - startedAt,
                 success: true,
@@ -860,7 +861,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                   writeAuditEntry({
                     auditId,
                     databaseId,
-                    operation: "describe_database",
+                    operation: "describe",
                     startedAt,
                     durationMs: Date.now() - startedAt,
                     success: false,
@@ -929,7 +930,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           writeAuditEntry({
             auditId,
             databaseId,
-            operation: "query_database",
+            operation: "query",
             sql,
             startedAt,
             durationMs: Date.now() - startedAt,
@@ -947,7 +948,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             writeAuditEntry({
               auditId,
               databaseId,
-              operation: "query_database",
+              operation: "query",
               sql,
               startedAt,
               durationMs: Date.now() - startedAt,
@@ -959,7 +960,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             writeAuditEntry({
               auditId,
               databaseId,
-              operation: "query_database",
+              operation: "query",
               sql,
               startedAt,
               durationMs: Date.now() - startedAt,
@@ -986,7 +987,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
               writeAuditEntry({
                 auditId,
                 databaseId,
-                operation: "query_database",
+                operation: "query",
                 sql,
                 startedAt,
                 durationMs: Date.now() - startedAt,
@@ -1000,7 +1001,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                   writeAuditEntry({
                     auditId,
                     databaseId,
-                    operation: "query_database",
+                    operation: "query",
                     sql,
                     startedAt,
                     durationMs: Date.now() - startedAt,
@@ -1028,53 +1029,6 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     };
   },
 }) {}
-
-const startMcpServer = Effect.fn("startMcpServer")(function* () {
-  const dbq = yield* Dbq;
-  const server = new McpServer({ name: "dbq", version });
-
-  server.registerTool(
-    "list_databases",
-    {
-      description: "List configured database targets. Connection URLs are never returned.",
-      inputSchema: z.object({}),
-    },
-    () => runDbqForMcp(dbq.listDatabases().pipe(Effect.map(jsonResponse))),
-  );
-
-  server.registerTool(
-    "describe_database",
-    {
-      description:
-        "Describe namespaces, relations, and columns for a configured database when DBQ has a metadata adapter. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use namespace and relations to scope large database output.",
-      inputSchema: describeDatabaseInputSchema,
-    },
-    (input) => {
-      const parsedInput = describeDatabaseInputSchema.parse(input);
-      const response = parsedInput.format === "compact" ? compactResponse : jsonResponse;
-
-      return runDbqForMcp(dbq.describeDatabase(parsedInput).pipe(Effect.map(response)));
-    },
-  );
-
-  server.registerTool(
-    "query_database",
-    {
-      description: "Run a confirmed SQL query against a configured database.",
-      inputSchema: queryDatabaseInputSchema,
-    },
-    (input) =>
-      runDbqForMcp(
-        dbq.queryDatabase(queryDatabaseInputSchema.parse(input)).pipe(Effect.map(jsonResponse)),
-      ),
-  );
-
-  const transport = new StdioServerTransport();
-  yield* Effect.tryPromise({
-    try: () => server.connect(transport),
-    catch: (cause) => new DatabaseError({ message: "Could not start MCP server", cause }),
-  });
-});
 
 const listCommand = Command.make("list", {}, () =>
   Effect.gen(function* () {
@@ -1109,15 +1063,13 @@ const describeCommand = Command.make(
   ({ databaseId, refresh, format, namespace, relation }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
-      const result = yield* dbq.describeDatabase(
-        describeDatabaseInputSchema.parse({
-          databaseId,
-          refresh,
-          format,
-          namespace: namespace || undefined,
-          relations: relation.length > 0 ? relation : undefined,
-        }),
-      );
+      const result = yield* dbq.describeDatabase({
+        databaseId,
+        refresh,
+        format,
+        namespace: namespace || undefined,
+        relations: relation.length > 0 ? relation : undefined,
+      });
       yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
     }),
 ).pipe(Command.withDescription("Describe namespaces, relations, and columns"));
@@ -1131,22 +1083,17 @@ const queryCommand = Command.make(
   ({ databaseId, sql }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
-      const input = queryDatabaseInputSchema.parse({
+      const result = yield* dbq.queryDatabase({
         databaseId,
         sql,
       });
-      const result = yield* dbq.queryDatabase(input);
       yield* Console.log(JSON.stringify(result, null, 2));
     }),
 ).pipe(Command.withDescription("Run a confirmed SQL query"));
 
-const mcpCommand = Command.make("mcp", {}, () => startMcpServer()).pipe(
-  Command.withDescription("Start the stdio MCP server"),
-);
-
-const rootCommand = Command.make("dbq", {}, () => startMcpServer()).pipe(
-  Command.withDescription("Local MCP server and CLI for named databases"),
-  Command.withSubcommands([mcpCommand, listCommand, describeCommand, queryCommand]),
+const rootCommand = Command.make("dbq", {}, () => Effect.void).pipe(
+  Command.withDescription("Local CLI for named databases"),
+  Command.withSubcommands([listCommand, describeCommand, queryCommand]),
 );
 
 const runCli = rootCommand.pipe(
@@ -1402,36 +1349,6 @@ function normalizeDatabaseType(type: string) {
     default:
       return type;
   }
-}
-
-function runDbqForMcp<A>(effect: Effect.Effect<A, DbqError>) {
-  return effect.pipe(Effect.provide(MainLive), Effect.runPromise);
-}
-
-function jsonResponse(value: unknown) {
-  const content = [
-    {
-      type: "text",
-      text: JSON.stringify(value, null, 2),
-    },
-  ] satisfies Array<{ type: "text"; text: string }>;
-
-  return {
-    content,
-  };
-}
-
-function compactResponse(value: unknown) {
-  const content = [
-    {
-      type: "text",
-      text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
-    },
-  ] satisfies Array<{ type: "text"; text: string }>;
-
-  return {
-    content,
-  };
 }
 
 function formatError(error: unknown) {

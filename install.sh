@@ -34,11 +34,6 @@ cat <<EOF
 DBQ installed to $DBQ_HOME
 CLI links installed to $DBQ_BIN_DIR
 
-Add this stdio MCP source to your client:
-
-  command: dbq
-  args: [mcp]
-
 Run the local CLI with:
 
   dbq list

@@ -28,6 +28,8 @@ Keep the canonical DBQ skill focused on the current state and recommended behavi
 
 ## Effect style
 
+Validate data at system boundaries and edges when possible, not repeatedly inside already-typed internal paths. For example, decode config files, cache files, database rows, and external command inputs/outputs as they enter the system; avoid re-validating values that Effect CLI or prior schema decoders have already parsed.
+
 Prefer `.pipe(...)` over wrapping expressions in helper calls when both forms are reasonable in Effect code.
 
 When using Effect `Schema.TaggedError` classes, yield tagged errors directly:

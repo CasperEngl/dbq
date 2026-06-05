@@ -9,11 +9,11 @@ DBQ queries named databases through `~/.dbq/config.toml`. It keeps database URLs
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-For databases that need a custom client, DBQ can run `databases.<id>.queryCommand` with `DBQ_DATABASE_URL` and `DBQ_SQL` in the command environment. Command-backed databases do not use DBQ metadata adapters; run engine-specific metadata SQL with `query_database` if `describe_database` reports no adapter. Do not print either value.
+For databases that need a custom client, DBQ can run `databases.<id>.queryCommand` with `DBQ_DATABASE_URL` and `DBQ_SQL` in the command environment. Command-backed databases do not use DBQ metadata adapters; run engine-specific metadata SQL with `dbq query` if `dbq describe` reports no adapter. Do not print either value.
 
-DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model when DBQ has a metadata adapter for the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` only when fresh database structure is needed.
+DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model when DBQ has a metadata adapter for the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` only when fresh database structure is needed.
 
-`describe` always caches the full database structure snapshot when it has to inspect the database. The `namespace` and `relations` filters only limit returned output. Agents can first call `describe_database` without relation filters to populate or reuse the full cached structure, then call it again with `relations: ["users", "posts"]` to retrieve a smaller focused slice from that cached structure.
+`describe` always caches the full database structure snapshot when it has to inspect the database. The `--namespace` and `--relation` filters only limit returned output. Agents can first run `dbq describe <database-id> --format compact` without relation filters to populate or reuse the full cached structure, then call it again with repeated `--relation` options to retrieve a smaller focused slice from that cached structure.
 
 ## Install
 
@@ -48,10 +48,9 @@ dbq describe app-development --format json
 dbq describe app-development --format compact --refresh
 dbq query app-development 'select * from users limit 10'
 dbq query app-production-readonly 'select now()'
-dbq mcp
 ```
 
-Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. MCP callers use the `relations` array for the same filter. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided after confirmation when confirmation is enabled.
+Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided after confirmation when confirmation is enabled.
 
 For CLI use, run an unfiltered describe when you need to warm or refresh the full structure cache:
 
@@ -64,12 +63,11 @@ dbq describe app-development --format compact --namespace public --relation user
 
 Use DBQ as the only interface for database queries and DBQ-managed credentials:
 
-- Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
-- Use the `dbq` CLI when MCP tools are unavailable or unclear.
-- Before writing SQL against an unfamiliar database, call `describe_database` once with `format: "compact"` and reuse that database structure during the task. If using the CLI, pass `--format compact` explicitly. If DBQ reports no metadata adapter, run the engine-specific metadata SQL you need through `query_database`.
-- For large databases, scope MCP structure output with `namespace` and `relations`, or CLI structure output with `--namespace` and repeated `--relation`, instead of dumping the whole database structure into the conversation. The filtered response still comes from the full cached structure snapshot.
-- Use `format: "json"` or `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
-- Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
+- Use the `dbq` CLI for all database operations.
+- Before writing SQL against an unfamiliar database, run `dbq describe <database-id> --format compact` once and reuse that database structure during the task. If DBQ reports no metadata adapter, run the engine-specific metadata SQL you need through `dbq query`.
+- For large databases, scope structure output with `--namespace` and repeated `--relation` instead of dumping the whole database structure into the conversation. The filtered response still comes from the full cached structure snapshot.
+- Use `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
+- Do not refresh database structure before every query. Use `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
 - DBQ does not rewrite SQL or enforce row limits. Include dialect-appropriate limits in the SQL when output should be bounded.
 - Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
 - Do not print, inspect, or validate DBQ-managed database URLs outside DBQ.
@@ -78,33 +76,9 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 Ambiguous database names:
 
 - Do not bake customer/project-specific database names or aliases into this generic skill.
-- If a user names an ambiguous database, run `dbq list` or the MCP `list_databases` tool to identify candidates.
+- If a user names an ambiguous database, run `dbq list` to identify candidates.
 - If multiple candidates remain and no project-local instruction defines a default, ask one short clarification question before querying.
 - If project-local instructions define aliases or defaults, follow those instructions without repeating private customer names in this skill.
-
-## MCP Config
-
-Use this MCP server config:
-
-```toml
-[mcp_servers.dbq]
-command = "dbq"
-args = ["mcp"]
-```
-
-Use the absolute binary if PATH is not available to the MCP client:
-
-```toml
-[mcp_servers.dbq]
-command = "/Users/YOU/.local/bin/dbq"
-args = ["mcp"]
-```
-
-DBQ exposes these MCP tools:
-
-- `list_databases`
-- `describe_database`
-- `query_database`
 
 ## Local Config
 

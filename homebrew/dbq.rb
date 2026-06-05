@@ -1,5 +1,5 @@
 class Dbq < Formula
-  desc "Local MCP server and CLI for named databases"
+  desc "Local CLI for named databases"
   homepage "https://github.com/CasperEngl/dbq"
   version "0.1.0"
 
@@ -23,8 +23,8 @@ class Dbq < Formula
         cp #{pkgshare}/config.example.toml ~/.dbq/config.toml
         chmod 600 ~/.dbq/config.toml
 
-      Start the MCP server with:
-        dbq mcp
+      Run the local CLI with:
+        dbq list
     EOS
   end
 

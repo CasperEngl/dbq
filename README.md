@@ -1,6 +1,6 @@
 # DBQ
 
-DBQ is a local CLI and MCP server for querying named databases through `~/.dbq/config.toml`.
+DBQ is a local CLI for querying named databases through `~/.dbq/config.toml`.
 
 DBQ is designed for local agent use:
 
@@ -43,24 +43,6 @@ If no config exists yet, it creates:
 ~/.dbq/config.toml
 ```
 
-## MCP Client Config
-
-Use DBQ as a stdio MCP server:
-
-```toml
-[mcp_servers.dbq]
-command = "/Users/YOU/.dbq/bin/dbq"
-args = ["mcp"]
-```
-
-If `~/.local/bin` is on your PATH, this can be:
-
-```toml
-[mcp_servers.dbq]
-command = "dbq"
-args = ["mcp"]
-```
-
 ## Configure Databases
 
 Edit `~/.dbq/config.toml`:
@@ -101,7 +83,7 @@ queryCommand = "example-sql-client --url \"$DBQ_DATABASE_URL\" --execute \"$DBQ_
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-DBQ also caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model with optional references when a DBQ metadata adapter can inspect the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire structure snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the snapshot.
+DBQ also caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model with optional references when a DBQ metadata adapter can inspect the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire structure snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` to bypass cached database structure and update the snapshot.
 
 `describe` caches the full structure snapshot when it has to inspect the database. The `namespace` and `relations` filters only limit returned output, so agents can reuse the full cached structure while requesting a smaller table list.
 
@@ -119,7 +101,7 @@ dbq describe my-project-development --refresh
 dbq query my-project-development 'select * from users limit 10'
 ```
 
-`describe` defaults to `--format compact`, a token-efficient line format for agents that omits cache status and format version. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. MCP callers use the `relations` array for the same filter. Use `--format json` for grouped structured output with cache details. `query` runs the SQL exactly as provided after confirmation when confirmation is enabled; include dialect-appropriate limits in the SQL when you need bounded output.
+`describe` defaults to `--format compact`, a token-efficient line format for agents that omits cache status and format version. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` for grouped structured output with cache details. `query` runs the SQL exactly as provided after confirmation when confirmation is enabled; include dialect-appropriate limits in the SQL when you need bounded output.
 
 To warm or reuse the full structure cache and then retrieve only selected tables:
 
@@ -127,14 +109,6 @@ To warm or reuse the full structure cache and then retrieve only selected tables
 dbq describe my-project-development --format compact
 dbq describe my-project-development --format compact --namespace public --relation users --relation posts
 ```
-
-## MCP Tools
-
-DBQ exposes:
-
-- `list_databases`
-- `describe_database`
-- `query_database`
 
 ## Agent Skill
 
