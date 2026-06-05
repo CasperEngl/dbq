@@ -17,6 +17,7 @@ const rootDirectory = process.env.DBQ_HOME ?? join(homedir(), ".dbq");
 const configPath = join(rootDirectory, "config.toml");
 const auditLogPath = join(rootDirectory, "audit.log");
 const urlCachePath = join(rootDirectory, "url-cache.json");
+const databaseStructureCachePath = join(rootDirectory, "database-structure-cache.json");
 const defaultConfirmCommand = join(rootDirectory, "bin", "dbq-confirm");
 
 const NonNegativeIntegerSchema = Schema.Number.pipe(
@@ -30,7 +31,9 @@ const DatabaseSchema = Schema.Struct({
   readonly: Schema.optionalWith(Schema.Boolean, { default: () => true }),
   urlCommand: Schema.optional(Schema.NonEmptyString),
   urlEnv: Schema.optional(Schema.NonEmptyString),
+  databaseUrlCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
   urlCacheTtlSeconds: Schema.optional(NonNegativeIntegerSchema),
+  databaseStructureCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
 }).pipe(
   Schema.filter((database) => database.urlCommand !== undefined || database.urlEnv !== undefined, {
     message: () => "must define urlCommand or urlEnv",
@@ -44,14 +47,15 @@ const ConfigSchema = Schema.Struct({
         default: () => true,
       }),
       confirmCommand: Schema.optional(Schema.NonEmptyString),
-      urlCacheTtlSeconds: Schema.optionalWith(NonNegativeIntegerSchema, {
-        default: () => 0,
-      }),
+      databaseUrlCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
+      urlCacheTtlSeconds: Schema.optional(NonNegativeIntegerSchema),
+      databaseStructureCacheDurationSeconds: Schema.optional(NonNegativeIntegerSchema),
     }),
     {
       default: () => ({
         confirmQueries: true,
-        urlCacheTtlSeconds: 0,
+        databaseUrlCacheDurationSeconds: 0,
+        databaseStructureCacheDurationSeconds: 0,
       }),
     },
   ),
@@ -78,6 +82,39 @@ const UrlCacheFileSchema = Schema.Struct({
 
 const emptyUrlCacheFile = Schema.decodeUnknownSync(UrlCacheFileSchema)({ entries: {} });
 
+const DatabaseColumnSchema = Schema.Struct({
+  table_schema: Schema.String,
+  table_name: Schema.String,
+  column_name: Schema.String,
+  data_type: Schema.String,
+  is_nullable: Schema.String,
+});
+
+const DatabaseStructureSchema = Schema.Struct({
+  databaseId: Schema.NonEmptyString,
+  generatedAt: NonNegativeIntegerSchema,
+  columns: Schema.Array(DatabaseColumnSchema),
+});
+
+const CachedDatabaseStructureSchema = Schema.Struct({
+  databaseStructure: DatabaseStructureSchema,
+  expiresAt: Schema.NullOr(NonNegativeIntegerSchema),
+});
+
+const DatabaseStructureCacheFileSchema = Schema.Struct({
+  entries: Schema.optionalWith(
+    Schema.Record({
+      key: Schema.NonEmptyString,
+      value: CachedDatabaseStructureSchema,
+    }),
+    { default: () => ({}) },
+  ),
+});
+
+const emptyDatabaseStructureCacheFile = Schema.decodeUnknownSync(DatabaseStructureCacheFileSchema)({
+  entries: {},
+});
+
 const queryDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   sql: z.string().min(1),
@@ -86,17 +123,22 @@ const queryDatabaseInputSchema = z.object({
 
 const describeDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
+  refresh: z.boolean().default(false),
 });
 
 type Config = typeof ConfigSchema.Type;
 type Database = typeof DatabaseSchema.Type;
 type Security = NonNullable<Config["security"]>;
 type QueryDatabaseInput = z.infer<typeof queryDatabaseInputSchema>;
+type DescribeDatabaseInput = z.infer<typeof describeDatabaseInputSchema>;
 type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
+type DatabaseStructure = typeof DatabaseStructureSchema.Type;
+type CachedDatabaseStructure = typeof CachedDatabaseStructureSchema.Type;
 
 const defaultSecurity = {
   confirmQueries: true,
-  urlCacheTtlSeconds: 0,
+  databaseUrlCacheDurationSeconds: 0,
+  databaseStructureCacheDurationSeconds: 0,
 };
 
 class ConfigError extends Schema.TaggedError<ConfigError>()("ConfigError", {
@@ -128,6 +170,7 @@ type DbqError = ConfigError | ValidationError | ConfirmationError | DatabaseErro
 class Dbq extends Effect.Service<Dbq>()("Dbq", {
   sync: () => {
     const databaseUrlCache = new Map<string, CachedDatabaseUrl>();
+    const databaseStructureCache = new Map<string, CachedDatabaseStructure>();
 
     const loadConfig = Effect.fn("Dbq.loadConfig")(function* () {
       const contents = yield* Effect.tryPromise({
@@ -209,11 +252,46 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const setCachedDatabaseUrl = (
       cacheKey: string,
       databaseUrl: string,
-      urlCacheTtlSeconds: number,
+      databaseUrlCacheDurationSeconds: number,
     ) => {
       databaseUrlCache.set(cacheKey, {
         databaseUrl,
-        expiresAt: urlCacheTtlSeconds > 0 ? Date.now() + urlCacheTtlSeconds * 1000 : null,
+        expiresAt:
+          databaseUrlCacheDurationSeconds > 0
+            ? Date.now() + databaseUrlCacheDurationSeconds * 1000
+            : null,
+      });
+    };
+
+    const getCachedDatabaseStructure = (cacheKey: string) => {
+      const cachedDatabaseStructure = databaseStructureCache.get(cacheKey);
+
+      if (!cachedDatabaseStructure) {
+        return undefined;
+      }
+
+      if (
+        cachedDatabaseStructure.expiresAt !== null &&
+        cachedDatabaseStructure.expiresAt <= Date.now()
+      ) {
+        databaseStructureCache.delete(cacheKey);
+        return undefined;
+      }
+
+      return cachedDatabaseStructure.databaseStructure;
+    };
+
+    const setCachedDatabaseStructure = (
+      cacheKey: string,
+      databaseStructure: DatabaseStructure,
+      databaseStructureCacheDurationSeconds: number,
+    ) => {
+      databaseStructureCache.set(cacheKey, {
+        databaseStructure,
+        expiresAt:
+          databaseStructureCacheDurationSeconds > 0
+            ? Date.now() + databaseStructureCacheDurationSeconds * 1000
+            : null,
       });
     };
 
@@ -249,9 +327,9 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const writeDiskCachedDatabaseUrl = Effect.fn("Dbq.writeDiskCachedDatabaseUrl")(function* (
       cacheKey: string,
       databaseUrl: string,
-      urlCacheTtlSeconds: number,
+      databaseUrlCacheDurationSeconds: number,
     ) {
-      if (urlCacheTtlSeconds <= 0) {
+      if (databaseUrlCacheDurationSeconds <= 0) {
         return;
       }
 
@@ -261,7 +339,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       entries[cacheKey] = {
         databaseUrl,
-        expiresAt: Date.now() + urlCacheTtlSeconds * 1000,
+        expiresAt: Date.now() + databaseUrlCacheDurationSeconds * 1000,
       };
 
       yield* Effect.tryPromise({
@@ -281,12 +359,87 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       });
     });
 
+    const readDiskCachedDatabaseStructure = Effect.fn("Dbq.readDiskCachedDatabaseStructure")(
+      function* (cacheKey: string) {
+        const contents = yield* readOptionalFile(databaseStructureCachePath);
+
+        if (!contents) {
+          return undefined;
+        }
+
+        const parsedCache = yield* parseDatabaseStructureCache(contents);
+        const cachedDatabaseStructure = parsedCache.entries?.[cacheKey];
+
+        if (!cachedDatabaseStructure) {
+          return undefined;
+        }
+
+        if (
+          cachedDatabaseStructure.expiresAt !== null &&
+          cachedDatabaseStructure.expiresAt <= Date.now()
+        ) {
+          return undefined;
+        }
+
+        return cachedDatabaseStructure;
+      },
+    );
+
+    const writeDiskCachedDatabaseStructure = Effect.fn("Dbq.writeDiskCachedDatabaseStructure")(
+      function* (
+        cacheKey: string,
+        databaseStructure: DatabaseStructure,
+        databaseStructureCacheDurationSeconds: number,
+      ) {
+        if (databaseStructureCacheDurationSeconds <= 0) {
+          return;
+        }
+
+        const contents = yield* readOptionalFile(databaseStructureCachePath);
+        const parsedCache = contents
+          ? yield* parseDatabaseStructureCache(contents)
+          : emptyDatabaseStructureCacheFile;
+        const entries = {
+          ...parsedCache.entries,
+        } satisfies Record<string, CachedDatabaseStructure>;
+
+        entries[cacheKey] = {
+          databaseStructure,
+          expiresAt: Date.now() + databaseStructureCacheDurationSeconds * 1000,
+        };
+
+        yield* Effect.tryPromise({
+          try: () => mkdir(dirname(databaseStructureCachePath), { recursive: true }),
+          catch: (cause) =>
+            new ConfigError({ message: `Could not create ${rootDirectory}`, cause }),
+        });
+        yield* Effect.tryPromise({
+          try: () =>
+            writeFile(databaseStructureCachePath, `${JSON.stringify({ entries }, null, 2)}\n`, {
+              mode: 0o600,
+            }),
+          catch: (cause) =>
+            new ConfigError({ message: `Could not write ${databaseStructureCachePath}`, cause }),
+        });
+        yield* Effect.tryPromise({
+          try: () => chmod(databaseStructureCachePath, 0o600),
+          catch: (cause) =>
+            new ConfigError({ message: `Could not secure ${databaseStructureCachePath}`, cause }),
+        });
+      },
+    );
+
     const resolveDatabaseUrl = Effect.fn("Dbq.resolveDatabaseUrl")(function* (
       databaseId: string,
       database: Database,
       security: Security,
     ) {
-      const urlCacheTtlSeconds = database.urlCacheTtlSeconds ?? security.urlCacheTtlSeconds;
+      const databaseUrlCacheDurationSeconds =
+        database.databaseUrlCacheDurationSeconds ??
+        database.urlCacheTtlSeconds ??
+        security.databaseUrlCacheDurationSeconds ??
+        security.urlCacheTtlSeconds ??
+        0;
       const cacheKey = `${databaseId}:${database.urlEnv ?? ""}:${database.urlCommand ?? ""}`;
       const cachedDatabaseUrl = getCachedDatabaseUrl(cacheKey);
 
@@ -303,7 +456,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           });
         }
 
-        setCachedDatabaseUrl(cacheKey, value, urlCacheTtlSeconds);
+        setCachedDatabaseUrl(cacheKey, value, databaseUrlCacheDurationSeconds);
         return value;
       }
 
@@ -313,10 +466,12 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       const diskCacheKey = hashCacheKey(cacheKey);
       const diskCachedDatabaseUrl =
-        urlCacheTtlSeconds > 0 ? yield* readDiskCachedDatabaseUrl(diskCacheKey) : undefined;
+        databaseUrlCacheDurationSeconds > 0
+          ? yield* readDiskCachedDatabaseUrl(diskCacheKey)
+          : undefined;
 
       if (diskCachedDatabaseUrl) {
-        setCachedDatabaseUrl(cacheKey, diskCachedDatabaseUrl, urlCacheTtlSeconds);
+        setCachedDatabaseUrl(cacheKey, diskCachedDatabaseUrl, databaseUrlCacheDurationSeconds);
         return diskCachedDatabaseUrl;
       }
 
@@ -369,8 +524,8 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         });
       }
 
-      setCachedDatabaseUrl(cacheKey, databaseUrl, urlCacheTtlSeconds);
-      yield* writeDiskCachedDatabaseUrl(diskCacheKey, databaseUrl, urlCacheTtlSeconds);
+      setCachedDatabaseUrl(cacheKey, databaseUrl, databaseUrlCacheDurationSeconds);
+      yield* writeDiskCachedDatabaseUrl(diskCacheKey, databaseUrl, databaseUrlCacheDurationSeconds);
       return databaseUrl;
     });
 
@@ -466,12 +621,67 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       return { databases };
     });
 
-    const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (databaseId: string) {
+    const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (
+      input: DescribeDatabaseInput,
+    ) {
+      const { databaseId, refresh } = input;
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
       const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
+      const databaseStructureCacheDurationSeconds =
+        database.databaseStructureCacheDurationSeconds ??
+        config.security.databaseStructureCacheDurationSeconds ??
+        0;
+      const databaseStructureCacheKey = hashCacheKey(`${databaseId}:${databaseUrl}`);
       const startedAt = Date.now();
       const auditId = randomUUID();
+      const formatDescribeResponse = (
+        databaseStructure: DatabaseStructure,
+        databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
+      ) => ({
+        databaseId,
+        databaseStructureCacheStatus,
+        databaseStructureGeneratedAt: new Date(databaseStructure.generatedAt).toISOString(),
+        columns: databaseStructure.columns,
+      });
+
+      if (!refresh) {
+        const memoryCachedDatabaseStructure = getCachedDatabaseStructure(databaseStructureCacheKey);
+
+        if (memoryCachedDatabaseStructure) {
+          yield* writeAuditEntry({
+            auditId,
+            databaseId,
+            operation: "describe_database",
+            startedAt,
+            durationMs: Date.now() - startedAt,
+            success: true,
+            rowCount: memoryCachedDatabaseStructure.columns.length,
+            cacheHit: true,
+          });
+          return formatDescribeResponse(memoryCachedDatabaseStructure, "hit");
+        }
+
+        const diskCachedDatabaseStructure =
+          databaseStructureCacheDurationSeconds > 0
+            ? yield* readDiskCachedDatabaseStructure(databaseStructureCacheKey)
+            : undefined;
+
+        if (diskCachedDatabaseStructure) {
+          databaseStructureCache.set(databaseStructureCacheKey, diskCachedDatabaseStructure);
+          yield* writeAuditEntry({
+            auditId,
+            databaseId,
+            operation: "describe_database",
+            startedAt,
+            durationMs: Date.now() - startedAt,
+            success: true,
+            rowCount: diskCachedDatabaseStructure.databaseStructure.columns.length,
+            cacheHit: true,
+          });
+          return formatDescribeResponse(diskCachedDatabaseStructure.databaseStructure, "hit");
+        }
+      }
 
       return yield* withClient(databaseUrl, (client) =>
         Effect.gen(function* () {
@@ -524,11 +734,35 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
               ),
             ),
           );
-
-          return {
+          const columns = yield* Schema.decodeUnknown(Schema.Array(DatabaseColumnSchema))(
+            result.rows,
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new DatabaseError({
+                  message: "Could not decode database structure",
+                  cause,
+                }),
+            ),
+          );
+          const databaseStructure = {
             databaseId,
-            columns: result.rows,
-          };
+            generatedAt: Date.now(),
+            columns,
+          } satisfies DatabaseStructure;
+
+          setCachedDatabaseStructure(
+            databaseStructureCacheKey,
+            databaseStructure,
+            databaseStructureCacheDurationSeconds,
+          );
+          yield* writeDiskCachedDatabaseStructure(
+            databaseStructureCacheKey,
+            databaseStructure,
+            databaseStructureCacheDurationSeconds,
+          );
+
+          return formatDescribeResponse(databaseStructure, refresh ? "refreshed" : "miss");
         }),
       );
     });
@@ -635,11 +869,16 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
   server.registerTool(
     "describe_database",
     {
-      description: "Describe schemas, tables, and columns for a configured Postgres database.",
+      description:
+        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure.",
       inputSchema: describeDatabaseInputSchema,
     },
-    ({ databaseId }) =>
-      runDbqForMcp(dbq.describeDatabase(databaseId).pipe(Effect.map(jsonResponse))),
+    (input) =>
+      runDbqForMcp(
+        dbq
+          .describeDatabase(describeDatabaseInputSchema.parse(input))
+          .pipe(Effect.map(jsonResponse)),
+      ),
   );
 
   server.registerTool(
@@ -671,11 +910,18 @@ const listCommand = Command.make("list", {}, () =>
 
 const describeCommand = Command.make(
   "describe",
-  { databaseId: Args.text({ name: "databaseId" }) },
-  ({ databaseId }) =>
+  {
+    databaseId: Args.text({ name: "databaseId" }),
+    refresh: Options.boolean("refresh").pipe(
+      Options.withDescription("Bypass cached database structure and update the cache"),
+    ),
+  },
+  ({ databaseId, refresh }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
-      const result = yield* dbq.describeDatabase(databaseId);
+      const result = yield* dbq.describeDatabase(
+        describeDatabaseInputSchema.parse({ databaseId, refresh }),
+      );
       yield* Console.log(JSON.stringify(result, null, 2));
     }),
 ).pipe(Command.withDescription("Describe schemas, tables, and columns"));
@@ -793,6 +1039,12 @@ function hashCacheKey(cacheKey: string) {
 function parseUrlCache(contents: string) {
   return Schema.decodeUnknown(Schema.parseJson(UrlCacheFileSchema))(contents).pipe(
     Effect.catchAll(() => Effect.succeed(emptyUrlCacheFile)),
+  );
+}
+
+function parseDatabaseStructureCache(contents: string) {
+  return Schema.decodeUnknown(Schema.parseJson(DatabaseStructureCacheFileSchema))(contents).pipe(
+    Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
   );
 }
 

@@ -69,8 +69,10 @@ Edit `~/.dbq/config.toml`:
 ```toml
 [security]
 confirmQueries = true
-# 0 disables disk caching. Set a default TTL to reuse urlCommand results between CLI runs.
-urlCacheTtlSeconds = 900
+# 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
+databaseUrlCacheDurationSeconds = 900
+# 0 disables disk caching for database structure. Structure is still cached in memory per process.
+databaseStructureCacheDurationSeconds = 3600
 
 [databases.my-project-development]
 engine = "postgres"
@@ -78,14 +80,18 @@ environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/my-project-development/url"
 # Optional per-database override. Each database URL has its own cache entry and expiry.
-urlCacheTtlSeconds = 300
+databaseUrlCacheDurationSeconds = 300
+# Optional per-database override for schema/table/column structure.
+databaseStructureCacheDurationSeconds = 900
 ```
 
 DBQ supports either `urlCommand` or `urlEnv`.
 
 Use `urlCommand` for secret-manager references and let DBQ run the command. Do not print database URLs or paste them into agent conversations.
 
-DBQ caches resolved database URLs in memory per process. Set `security.urlCacheTtlSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.urlCacheTtlSeconds` to give a specific database URL its own TTL. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave TTLs at `0` to avoid writing resolved database URLs to disk.
+DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
+
+DBQ also caches database structure from `describe` in memory per process. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to persist schema/table/column structure between separate CLI runs in `~/.dbq/database-structure-cache.json`. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the cache.
 
 ## CLI
 
@@ -94,6 +100,7 @@ Use the same binary locally:
 ```bash
 dbq list
 dbq describe my-project-development
+dbq describe my-project-development --refresh
 dbq query my-project-development 'select * from users limit 10'
 ```
 

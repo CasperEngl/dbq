@@ -7,7 +7,9 @@ description: Use DBQ to list, inspect, and safely query configured Postgres data
 
 DBQ queries named Postgres databases through `~/.dbq/config.toml`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, wraps queries in read-only transactions, and requires macOS confirmation for queries against writable database targets.
 
-DBQ caches resolved database URLs in memory per process. Set `security.urlCacheTtlSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.urlCacheTtlSeconds` to give a specific database URL its own TTL. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave TTLs at `0` to avoid writing resolved database URLs to disk.
+DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
+
+DBQ caches database structure from `describe` in memory per process. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to persist schema/table/column structure between separate CLI runs in `~/.dbq/database-structure-cache.json`. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the cache.
 
 ## Install
 
@@ -36,6 +38,7 @@ Use the CLI:
 ```bash
 dbq list
 dbq describe app-development
+dbq describe app-development --refresh
 dbq query app-development 'select * from users limit 10'
 dbq query app-production-readonly 'select now()' --max-rows 10
 dbq mcp
@@ -49,6 +52,8 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 
 - Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
 - Use the `dbq` CLI when MCP tools are unavailable or unclear.
+- Before writing SQL against an unfamiliar database, call `describe_database` once and reuse that database structure during the task.
+- Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
 - Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
 - Do not print, inspect, or validate DBQ-managed database URLs outside DBQ.
 - If DBQ URL resolution fails, report the DBQ error and inspect DBQ logs/config structure only; do not read the secret value with 1Password.
@@ -91,8 +96,10 @@ DBQ reads config from `~/.dbq/config.toml`. Do not print, commit, or expose data
 ```toml
 [security]
 confirmQueries = true
-# 0 disables disk caching. Set a default TTL to reuse urlCommand results between CLI runs.
-urlCacheTtlSeconds = 900
+# 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
+databaseUrlCacheDurationSeconds = 900
+# 0 disables disk caching for database structure. Structure is still cached in memory per process.
+databaseStructureCacheDurationSeconds = 3600
 
 [databases.app-development]
 engine = "postgres"
@@ -100,7 +107,9 @@ environment = "development"
 readonly = true
 urlCommand = "op read 'op://Databases/App Development DB URL/notesPlain'"
 # Optional per-database override. Each database URL has its own cache entry and expiry.
-urlCacheTtlSeconds = 300
+databaseUrlCacheDurationSeconds = 300
+# Optional per-database override for schema/table/column structure.
+databaseStructureCacheDurationSeconds = 900
 
 [databases.app-production-readonly]
 engine = "postgres"

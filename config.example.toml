@@ -1,11 +1,15 @@
 [security]
 confirmQueries = true
+# 0 disables disk caching. Database structure is still cached in memory per DBQ process.
+databaseStructureCacheDurationSeconds = 3600
 
 [databases.example-development]
 engine = "postgres"
 environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/example-development/url"
+# Optional per-database database structure cache duration override.
+databaseStructureCacheDurationSeconds = 900
 
 [databases.example-production]
 engine = "postgres"
