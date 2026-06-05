@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 - 2026-06-05
+
+- Remove `environment` field and add support for literal `url` config
+
 ## v0.3.0 - 2026-06-05
 
 - Migrate config format from TOML to JSONC
