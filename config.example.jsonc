@@ -7,9 +7,8 @@
   "databases": {
     "example-development": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
-      "urlCommand": "op read op://Databases/example-development/url",
+      "url": "postgres://localhost:5432/example_development",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
       "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
       // Optional per-database database structure snapshot expiry override.
@@ -17,7 +16,6 @@
     },
     "example-production": {
       "engine": "postgres",
-      "environment": "production",
       "readonly": true,
       "urlCommand": "op read op://Databases/example-production-readonly/url",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
@@ -25,7 +23,6 @@
     },
     "example-analytics": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
       "urlCommand": "op read op://Databases/example-analytics/url",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",

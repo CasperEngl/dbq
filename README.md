@@ -7,7 +7,7 @@ DBQ is designed for local agent use:
 - database URLs stay on the local machine
 - production targets should use read-only credentials
 - every query is audited to `~/.dbq/audit.log`
-- queries require macOS Touch ID or account-password confirmation when `confirmQueries` is enabled
+- writable database queries require macOS Touch ID or account-password confirmation when `confirmQueries` is enabled
 
 ## Install
 
@@ -73,9 +73,8 @@ Edit `~/.dbq/config.jsonc`:
   "databases": {
     "my-project-development": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
-      "urlCommand": "op read op://Databases/my-project-development/url",
+      "url": "postgres://localhost:5432/my_project_development",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
       "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
       // Optional per-database override. Each database URL has its own cache entry and expiry.
@@ -87,13 +86,13 @@ Edit `~/.dbq/config.jsonc`:
 }
 ```
 
-DBQ supports either `urlCommand` or `urlEnv`.
+DBQ supports `url`, `urlCommand`, or `urlEnv`.
 
-Use `urlCommand` for secret-manager references and let DBQ run the command. Do not print database URLs or paste them into agent conversations.
+Use `url` for literal local connection strings, `urlCommand` for secret-manager references, or `urlEnv` for environment variables. Do not print database URLs or paste them into agent conversations.
 
 Configure `queryCommand` for each database agents should query. DBQ delegates database communication to the configured command: it resolves the connection URL, passes it as `DBQ_DATABASE_URL`, passes the requested SQL as `DBQ_SQL`, and returns the command's stdout as query output. Do not print either value.
 
-Configure `describeCommand` for each database agents should inspect. DBQ resolves the connection URL and runs the command with `DBQ_DATABASE_URL`, `DBQ_DATABASE_ID`, `DBQ_DATABASE_ENGINE`, `DBQ_DATABASE_ENVIRONMENT`, and `DBQ_DATABASE_READONLY` in the environment. The command must print DBQ database structure JSON to stdout:
+Configure `describeCommand` for each database agents should inspect. DBQ resolves the connection URL and runs the command with `DBQ_DATABASE_URL`, `DBQ_DATABASE_ID`, `DBQ_DATABASE_ENGINE`, and `DBQ_DATABASE_READONLY` in the environment. The command must print DBQ database structure JSON to stdout:
 
 ```json
 {
@@ -234,9 +233,8 @@ SQL
   "databases": {
     "analytics": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
-      "urlCommand": "op read op://Databases/analytics/url",
+      "url": "postgres://localhost:5432/analytics",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
       "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
     },
@@ -264,7 +262,7 @@ dbq describe my-project-development --refresh
 dbq query my-project-development 'select * from users limit 10'
 ```
 
-`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` for grouped structured output with cache details. `query` runs the SQL exactly as provided through the configured `queryCommand` after confirmation when confirmation is enabled; include dialect-appropriate limits in the SQL when you need bounded output.
+`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` for grouped structured output with cache details. `query` runs the SQL exactly as provided through the configured `queryCommand`; writable databases require confirmation when confirmation is enabled. Include dialect-appropriate limits in the SQL when you need bounded output.
 
 To warm or reuse the full structure cache and then retrieve only selected tables:
 

@@ -23,7 +23,6 @@ const NonNegativeIntegerSchema = Schema.Number.pipe(
 
 const DatabaseBaseSchema = Schema.Struct({
   engine: Schema.NonEmptyString,
-  environment: Schema.Literal("development", "production"),
   readonly: Schema.Boolean.pipe(Schema.optionalWith({ default: () => true })),
   queryCommand: Schema.NonEmptyString.pipe(Schema.optional),
   describeCommand: Schema.NonEmptyString.pipe(Schema.optional),
@@ -184,6 +183,18 @@ class AuditError extends Schema.TaggedError<AuditError>()("AuditError", {
   message: Schema.String,
   cause: Schema.Unknown.pipe(Schema.optional),
 }) {}
+
+const getDatabaseUrlResolver = (database: Database) => {
+  if ("url" in database) {
+    return "url";
+  }
+
+  if ("urlCommand" in database) {
+    return "urlCommand";
+  }
+
+  return "urlEnv";
+};
 
 class Dbq extends Effect.Service<Dbq>()("Dbq", {
   sync: () => {
@@ -559,7 +570,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       databaseId: string,
       sql: string,
     ) {
-      if (!security.confirmQueries) {
+      if (database.readonly || !security.confirmQueries) {
         return;
       }
 
@@ -667,7 +678,6 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
           DBQ_DATABASE_URL: databaseUrl,
           DBQ_DATABASE_ID: databaseId,
           DBQ_DATABASE_ENGINE: database.engine,
-          DBQ_DATABASE_ENVIRONMENT: database.environment,
           DBQ_DATABASE_READONLY: String(database.readonly),
         },
         stdout: "pipe",
@@ -732,9 +742,8 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       const databases = Object.entries(config.databases).map(([id, database]) => ({
         id,
         engine: database.engine,
-        environment: database.environment,
         readonly: database.readonly,
-        secretResolver: "url" in database ? "url" : "urlCommand" in database ? "urlCommand" : "urlEnv",
+        secretResolver: getDatabaseUrlResolver(database),
       }));
 
       return { databases };

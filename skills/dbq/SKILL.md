@@ -5,13 +5,13 @@ description: Use DBQ to list, inspect, and safely query configured databases.
 
 # DBQ
 
-DBQ queries named databases through `~/.dbq/config.jsonc`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for queries when `confirmQueries` is enabled.
+DBQ queries named databases through `~/.dbq/config.jsonc`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for writable database queries when `confirmQueries` is enabled.
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
 DBQ runs `databases.<id>.queryCommand` with `DBQ_DATABASE_URL` and `DBQ_SQL` in the command environment. The configured command is responsible for talking to the database. Do not print either value.
 
-DBQ runs `databases.<id>.describeCommand` with `DBQ_DATABASE_URL`, `DBQ_DATABASE_ID`, `DBQ_DATABASE_ENGINE`, `DBQ_DATABASE_ENVIRONMENT`, and `DBQ_DATABASE_READONLY` in the command environment when database structure must be refreshed. The command must print DBQ database structure JSON to stdout. Do not print the URL.
+DBQ runs `databases.<id>.describeCommand` with `DBQ_DATABASE_URL`, `DBQ_DATABASE_ID`, `DBQ_DATABASE_ENGINE`, and `DBQ_DATABASE_READONLY` in the command environment when database structure must be refreshed. The command must print DBQ database structure JSON to stdout. Do not print the URL.
 
 For the exact `describeCommand` JSON schema, read [references/describe-format.md](references/describe-format.md). For client-specific `queryCommand` templates and describe wrapper examples, read only the relevant reference:
 
@@ -66,7 +66,7 @@ dbq query app-development 'select * from users limit 10'
 dbq query app-production-readonly 'select now()'
 ```
 
-Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided through the configured `queryCommand` after confirmation when confirmation is enabled.
+Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided through the configured `queryCommand`; writable databases require confirmation when confirmation is enabled.
 
 For CLI use, run an unfiltered describe when you need to warm or refresh the full structure cache:
 
@@ -98,7 +98,7 @@ Ambiguous database names:
 
 ## Local Config
 
-DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose database URLs. Prefer `urlCommand` with 1Password references, but let DBQ execute those commands.
+DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose database URLs. Use `url` for literal local connection strings, `urlCommand` for secret-manager references, or `urlEnv` for environment variables. Prefer `urlCommand` with 1Password references for shared or production databases, but let DBQ execute those commands.
 
 ```jsonc
 {
@@ -112,9 +112,8 @@ DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose dat
   "databases": {
     "app-development": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
-      "urlCommand": "op read 'op://Databases/App Development DB URL/notesPlain'",
+      "url": "postgres://localhost:5432/app_development",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
       "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
       // Optional per-database override. Each database URL has its own cache entry and expiry.
@@ -124,7 +123,6 @@ DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose dat
     },
     "app-production-readonly": {
       "engine": "postgres",
-      "environment": "production",
       "readonly": true,
       "urlCommand": "op read 'op://Databases/App Production Read-Only DB URL/notesPlain'",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
@@ -132,7 +130,6 @@ DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose dat
     },
     "app-production-writable": {
       "engine": "postgres",
-      "environment": "production",
       "readonly": false,
       "urlCommand": "op read 'op://Databases/App Production Writable DB URL/notesPlain'",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
@@ -140,7 +137,6 @@ DBQ reads config from `~/.dbq/config.jsonc`. Do not print, commit, or expose dat
     },
     "app-analytics": {
       "engine": "postgres",
-      "environment": "development",
       "readonly": true,
       "urlCommand": "op read 'op://Databases/App Analytics DB URL/notesPlain'",
       "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
