@@ -1,15 +1,17 @@
 ---
 name: dbq
-description: Use DBQ to list, inspect, and safely query configured Postgres databases.
+description: Use DBQ to list, inspect, and safely query configured databases.
 ---
 
 # DBQ
 
-DBQ queries named Postgres databases through `~/.dbq/config.toml`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, wraps queries in read-only transactions, and requires macOS confirmation for queries against writable database targets.
+DBQ queries named databases through `~/.dbq/config.toml`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for queries when `confirmQueries` is enabled.
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire schema/table/column snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` only when fresh database structure is needed.
+For databases that need a custom client, DBQ can run `databases.<id>.queryCommand` with `DBQ_DATABASE_URL` and `DBQ_SQL` in the command environment. Command-backed databases do not use DBQ metadata adapters; run engine-specific metadata SQL with `query_database` if `describe_database` reports no adapter. Do not print either value.
+
+DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure is a generic namespace/relation/column model when DBQ has a metadata adapter for the target. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` only when fresh database structure is needed.
 
 ## Install
 
@@ -37,17 +39,17 @@ Use the CLI:
 
 ```bash
 dbq list
-dbq describe app-development
-dbq describe app-development --schema public
-dbq describe app-development --schema public --table users
+dbq describe app-development --format compact
+dbq describe app-development --format compact --namespace public
+dbq describe app-development --format compact --namespace public --relation users
 dbq describe app-development --format json
-dbq describe app-development --refresh
+dbq describe app-development --format compact --refresh
 dbq query app-development 'select * from users limit 10'
-dbq query app-production-readonly 'select now()' --max-rows 10
+dbq query app-production-readonly 'select now()'
 dbq mcp
 ```
 
-`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--schema` and `--table` to keep large database output focused. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL, allows only `SELECT`/`WITH`, rejects semicolons, and defaults to `--max-rows 100`.
+Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and `--relation` to keep large database output focused. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided after confirmation when confirmation is enabled.
 
 ## Querying Rules
 
@@ -55,10 +57,11 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 
 - Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
 - Use the `dbq` CLI when MCP tools are unavailable or unclear.
-- Before writing SQL against an unfamiliar database, call `describe_database` once using the default compact format and reuse that database structure during the task.
-- For large databases, scope structure output with `schema` and `table` instead of dumping the whole database structure into the conversation.
+- Before writing SQL against an unfamiliar database, call `describe_database` once with `format: "compact"` and reuse that database structure during the task. If using the CLI, pass `--format compact` explicitly. If DBQ reports no metadata adapter, run the engine-specific metadata SQL you need through `query_database`.
+- For large databases, scope structure output with `namespace` and `relation` instead of dumping the whole database structure into the conversation.
 - Use `format: "json"` or `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
 - Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
+- DBQ does not rewrite SQL or enforce row limits. Include dialect-appropriate limits in the SQL when output should be bounded.
 - Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
 - Do not print, inspect, or validate DBQ-managed database URLs outside DBQ.
 - If DBQ URL resolution fails, report the DBQ error and inspect DBQ logs/config structure only; do not read the secret value with 1Password.
@@ -107,7 +110,7 @@ databaseUrlCacheDurationSeconds = 900
 databaseStructureCacheDurationSeconds = 3600
 
 [databases.app-development]
-engine = "postgres"
+engine = "sql"
 environment = "development"
 readonly = true
 urlCommand = "op read 'op://Databases/App Development DB URL/notesPlain'"
@@ -117,16 +120,23 @@ databaseUrlCacheDurationSeconds = 300
 databaseStructureCacheDurationSeconds = 900
 
 [databases.app-production-readonly]
-engine = "postgres"
+engine = "sql"
 environment = "production"
 readonly = true
 urlCommand = "op read 'op://Databases/App Production Read-Only DB URL/notesPlain'"
 
 [databases.app-production-writable]
-engine = "postgres"
+engine = "sql"
 environment = "production"
 readonly = false
 urlCommand = "op read 'op://Databases/App Production Writable DB URL/notesPlain'"
+
+[databases.app-analytics]
+engine = "sql"
+environment = "development"
+readonly = true
+urlCommand = "op read 'op://Databases/App Analytics DB URL/notesPlain'"
+queryCommand = "example-sql-client --url \"$DBQ_DATABASE_URL\" --execute \"$DBQ_SQL\""
 ```
 
 The `urlCommand` examples document how DBQ is configured. They are not instructions for agents to run `op` directly during query tasks.

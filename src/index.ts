@@ -26,11 +26,12 @@ const NonNegativeIntegerSchema = Schema.Number.pipe(
 );
 
 const DatabaseSchema = Schema.Struct({
-  engine: Schema.Literal("postgres"),
+  engine: Schema.NonEmptyString,
   environment: Schema.Literal("development", "production"),
   readonly: Schema.Boolean.pipe(Schema.optionalWith({ default: () => true })),
   urlCommand: Schema.NonEmptyString.pipe(Schema.optional),
   urlEnv: Schema.NonEmptyString.pipe(Schema.optional),
+  queryCommand: Schema.NonEmptyString.pipe(Schema.optional),
   databaseUrlCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
   urlCacheTtlSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
   databaseStructureCacheDurationSeconds: NonNegativeIntegerSchema.pipe(Schema.optional),
@@ -103,38 +104,42 @@ const DatabaseStructureColumnSchema = Schema.Struct({
   type: Schema.String,
   nullable: Schema.Boolean,
   references: Schema.Struct({
-    schema: Schema.String,
-    table: Schema.String,
+    namespace: Schema.String,
+    relation: Schema.String,
     column: Schema.String,
   }).pipe(Schema.optional),
 });
 
-const DatabaseStructureForeignKeySchema = Schema.Struct({
+const DatabaseStructureReferenceSchema = Schema.Struct({
   name: Schema.String,
   columns: Schema.Array(Schema.String).pipe(Schema.mutable),
   references: Schema.Struct({
-    schema: Schema.String,
-    table: Schema.String,
+    namespace: Schema.String,
+    relation: Schema.String,
     columns: Schema.Array(Schema.String).pipe(Schema.mutable),
   }).pipe(Schema.mutable),
 }).pipe(Schema.mutable);
 
-const DatabaseStructureTableSchema = Schema.Struct({
+const DatabaseStructureRelationSchema = Schema.Struct({
   name: Schema.String,
+  kind: Schema.Literal("table", "view", "relation"),
   columns: Schema.Array(DatabaseStructureColumnSchema),
-  foreignKeys: Schema.Array(DatabaseStructureForeignKeySchema),
+  references: Schema.Array(DatabaseStructureReferenceSchema),
 });
 
-const DatabaseStructureSchemaEntrySchema = Schema.Struct({
+const DatabaseStructureNamespaceSchema = Schema.Struct({
   name: Schema.String,
-  tables: Schema.Array(DatabaseStructureTableSchema),
+  kind: Schema.Literal("schema", "catalog", "namespace"),
+  relations: Schema.Array(DatabaseStructureRelationSchema),
 });
 
 const DatabaseStructureSchema = Schema.Struct({
   formatVersion: Schema.Literal(1),
   databaseId: Schema.NonEmptyString,
+  engine: Schema.NonEmptyString,
   generatedAt: NonNegativeIntegerSchema,
-  schemas: Schema.Array(DatabaseStructureSchemaEntrySchema),
+  metadataSource: Schema.Literal("dbq-adapter", "agent-query"),
+  namespaces: Schema.Array(DatabaseStructureNamespaceSchema),
 });
 
 const CachedDatabaseStructureSchema = Schema.Struct({
@@ -155,36 +160,17 @@ const emptyDatabaseStructureCacheFile = DatabaseStructureCacheFileSchema.pipe(
   entries: {},
 });
 
-const LegacyDatabaseStructureSchema = Schema.Struct({
-  databaseId: Schema.NonEmptyString,
-  generatedAt: NonNegativeIntegerSchema,
-  columns: Schema.Array(DatabaseColumnRowSchema),
-});
-
-const LegacyCachedDatabaseStructureSchema = Schema.Struct({
-  databaseStructure: LegacyDatabaseStructureSchema,
-  expiresAt: Schema.NullOr(NonNegativeIntegerSchema),
-});
-
-const LegacyDatabaseStructureCacheFileSchema = Schema.Struct({
-  entries: Schema.Record({
-    key: Schema.NonEmptyString,
-    value: LegacyCachedDatabaseStructureSchema,
-  }).pipe(Schema.optionalWith({ default: () => ({}) })),
-});
-
 const queryDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   sql: z.string().min(1),
-  maxRows: z.number().int().min(1).max(1000).default(100),
 });
 
 const describeDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   refresh: z.boolean().default(false),
   format: z.enum(["compact", "json"]).default("compact"),
-  schema: z.string().min(1).optional(),
-  table: z.string().min(1).optional(),
+  namespace: z.string().min(1).optional(),
+  relation: z.string().min(1).optional(),
 });
 
 type Config = typeof ConfigSchema.Type;
@@ -196,7 +182,7 @@ type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
 type DatabaseColumnRow = typeof DatabaseColumnRowSchema.Type;
 type DatabaseForeignKeyRow = typeof DatabaseForeignKeyRowSchema.Type;
 type DatabaseStructureColumn = typeof DatabaseStructureColumnSchema.Type;
-type DatabaseStructureForeignKey = typeof DatabaseStructureForeignKeySchema.Type;
+type DatabaseStructureReference = typeof DatabaseStructureReferenceSchema.Type;
 type DatabaseStructure = typeof DatabaseStructureSchema.Type;
 type CachedDatabaseStructure = typeof CachedDatabaseStructureSchema.Type;
 
@@ -599,7 +585,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       databaseId: string,
       sql: string,
     ) {
-      if (!security.confirmQueries || database.readonly) {
+      if (!security.confirmQueries) {
         return;
       }
 
@@ -672,6 +658,60 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       });
     });
 
+    const runQueryCommand = Effect.fn("Dbq.runQueryCommand")(function* (
+      databaseUrl: string,
+      queryCommand: string,
+      sql: string,
+    ) {
+      const processResult = Bun.spawn(["sh", "-lc", queryCommand], {
+        env: {
+          ...process.env,
+          DBQ_DATABASE_URL: databaseUrl,
+          DBQ_SQL: sql,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          Effect.tryPromise({
+            try: () => new Response(processResult.stdout).text(),
+            catch: (cause) =>
+              new DatabaseError({
+                message: "Could not read queryCommand stdout",
+                cause,
+              }),
+          }),
+          Effect.tryPromise({
+            try: () => new Response(processResult.stderr).text(),
+            catch: (cause) =>
+              new DatabaseError({
+                message: "Could not read queryCommand stderr",
+                cause,
+              }),
+          }),
+          Effect.tryPromise({
+            try: () => processResult.exited,
+            catch: (cause) =>
+              new DatabaseError({
+                message: "queryCommand did not exit cleanly",
+                cause,
+              }),
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      if (exitCode !== 0) {
+        return yield* new DatabaseError({
+          message: stderr.trim() || `queryCommand exited with code ${exitCode}`,
+        });
+      }
+
+      return stdout;
+    });
+
     const listDatabases = Effect.fn("Dbq.listDatabases")(function* () {
       const config = yield* loadConfig();
       const databases = Object.entries(config.databases).map(([id, database]) => ({
@@ -688,9 +728,16 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (
       input: DescribeDatabaseInput,
     ) {
-      const { databaseId, refresh, format, schema, table } = input;
+      const { databaseId, refresh, format, namespace, relation } = input;
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
+
+      if (database.queryCommand) {
+        return yield* new ValidationError({
+          message: `No DBQ metadata adapter is available for ${databaseId}; run a metadata query with query_database instead.`,
+        });
+      }
+
       const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
       const databaseStructureCacheDurationSeconds =
         database.databaseStructureCacheDurationSeconds ??
@@ -704,7 +751,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
       ) =>
         formatDatabaseStructure(
-          filterDatabaseStructure(databaseStructure, { schema, table }),
+          filterDatabaseStructure(databaseStructure, { namespace, relation }),
           databaseStructureCacheStatus,
           format,
         );
@@ -847,6 +894,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             );
           const databaseStructure = buildDatabaseStructure(
             databaseId,
+            database.engine,
             columns,
             foreignKeys,
             Date.now(),
@@ -869,8 +917,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     });
 
     const queryDatabase = Effect.fn("Dbq.queryDatabase")(function* (input: QueryDatabaseInput) {
-      const { databaseId, sql, maxRows } = input;
-      yield* validateReadOnlySql(sql);
+      const { databaseId, sql } = input;
 
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
@@ -894,16 +941,45 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
       const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
 
+      if (database.queryCommand) {
+        const output = yield* runQueryCommand(databaseUrl, database.queryCommand, sql).pipe(
+          Effect.tap((queryOutput) =>
+            writeAuditEntry({
+              auditId,
+              databaseId,
+              operation: "query_database",
+              sql,
+              startedAt,
+              durationMs: Date.now() - startedAt,
+              success: true,
+              outputBytes: queryOutput.length,
+            }),
+          ),
+          Effect.tapError((error) =>
+            writeAuditEntry({
+              auditId,
+              databaseId,
+              operation: "query_database",
+              sql,
+              startedAt,
+              durationMs: Date.now() - startedAt,
+              success: false,
+              errorMessage: error.message,
+            }),
+          ),
+        );
+
+        return {
+          databaseId,
+          output,
+        };
+      }
+
       return yield* withClient(databaseUrl, (client) =>
         Effect.gen(function* () {
           const result = yield* Effect.gen(function* () {
-            yield* pgQuery(client, "begin read only");
-            yield* pgQuery(client, "set local statement_timeout = '5s'");
-            const queryResult = yield* pgQuery(
-              client,
-              `select * from (${sql}) as dbq_result limit ${maxRows}`,
-            );
-            yield* pgQuery(client, "rollback");
+            yield* pgQuery(client, "set statement_timeout = '5s'");
+            const queryResult = yield* pgQuery(client, sql);
             return queryResult;
           }).pipe(
             Effect.tap((queryResult) =>
@@ -970,7 +1046,7 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
     "describe_database",
     {
       description:
-        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use schema and table to scope large database output.",
+        "Describe namespaces, relations, and columns for a configured database when DBQ has a metadata adapter. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use namespace and relation to scope large database output.",
       inputSchema: describeDatabaseInputSchema,
     },
     (input) => {
@@ -984,7 +1060,7 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
   server.registerTool(
     "query_database",
     {
-      description: "Run a guarded read-only SQL query against a configured Postgres database.",
+      description: "Run a confirmed SQL query against a configured database.",
       inputSchema: queryDatabaseInputSchema,
     },
     (input) =>
@@ -1019,16 +1095,16 @@ const describeCommand = Command.make(
       Options.withDefault("compact"),
       Options.withDescription("Output compact token-efficient text or grouped JSON"),
     ),
-    schema: Options.text("schema").pipe(
+    namespace: Options.text("namespace").pipe(
       Options.withDefault(""),
-      Options.withDescription("Only output one schema from the cached database structure"),
+      Options.withDescription("Only output one namespace from the cached database structure"),
     ),
-    table: Options.text("table").pipe(
+    relation: Options.text("relation").pipe(
       Options.withDefault(""),
-      Options.withDescription("Only output one table from the cached database structure"),
+      Options.withDescription("Only output one relation from the cached database structure"),
     ),
   },
-  ({ databaseId, refresh, format, schema, table }) =>
+  ({ databaseId, refresh, format, namespace, relation }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
       const result = yield* dbq.describeDatabase(
@@ -1036,42 +1112,38 @@ const describeCommand = Command.make(
           databaseId,
           refresh,
           format,
-          schema: schema || undefined,
-          table: table || undefined,
+          namespace: namespace || undefined,
+          relation: relation || undefined,
         }),
       );
       yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
     }),
-).pipe(Command.withDescription("Describe schemas, tables, and columns"));
-
-const maxRowsOption = Options.integer("max-rows").pipe(Options.withDefault(100));
+).pipe(Command.withDescription("Describe namespaces, relations, and columns"));
 
 const queryCommand = Command.make(
   "query",
   {
     databaseId: Args.text({ name: "databaseId" }),
     sql: Args.text({ name: "sql" }),
-    maxRows: maxRowsOption,
   },
-  ({ databaseId, sql, maxRows }) =>
+  ({ databaseId, sql }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
       const input = queryDatabaseInputSchema.parse({
         databaseId,
         sql,
-        maxRows,
       });
       const result = yield* dbq.queryDatabase(input);
       yield* Console.log(JSON.stringify(result, null, 2));
     }),
-).pipe(Command.withDescription("Run a guarded read-only SQL query"));
+).pipe(Command.withDescription("Run a confirmed SQL query"));
 
 const mcpCommand = Command.make("mcp", {}, () => startMcpServer()).pipe(
   Command.withDescription("Start the stdio MCP server"),
 );
 
 const rootCommand = Command.make("dbq", {}, () => startMcpServer()).pipe(
-  Command.withDescription("Local MCP server and CLI for named Postgres databases"),
+  Command.withDescription("Local MCP server and CLI for named databases"),
   Command.withSubcommands([mcpCommand, listCommand, describeCommand, queryCommand]),
 );
 
@@ -1093,51 +1165,6 @@ const exit = await Effect.runPromiseExit(cliEffect);
 
 if (exit._tag === "Failure") {
   process.exitCode = 1;
-}
-
-function validateReadOnlySql(sql: string) {
-  return Effect.gen(function* () {
-    const normalizedSql = stripLeadingComments(sql).trim().toLowerCase();
-
-    if (!normalizedSql.startsWith("select ") && !normalizedSql.startsWith("with ")) {
-      return yield* new ValidationError({
-        message: "Only SELECT and WITH queries are allowed",
-      });
-    }
-
-    if (sql.includes(";")) {
-      return yield* new ValidationError({
-        message: "Semicolons are not allowed",
-      });
-    }
-  });
-}
-
-function stripLeadingComments(sql: string) {
-  let remainingSql = sql.trimStart();
-
-  while (remainingSql.startsWith("--") || remainingSql.startsWith("/*")) {
-    if (remainingSql.startsWith("--")) {
-      const lineBreakIndex = remainingSql.indexOf("\n");
-
-      if (lineBreakIndex === -1) {
-        return "";
-      }
-
-      remainingSql = remainingSql.slice(lineBreakIndex + 1).trimStart();
-      continue;
-    }
-
-    const blockCommentEndIndex = remainingSql.indexOf("*/");
-
-    if (blockCommentEndIndex === -1) {
-      return "";
-    }
-
-    remainingSql = remainingSql.slice(blockCommentEndIndex + 2).trimStart();
-  }
-
-  return remainingSql;
 }
 
 function summarizeSql(sql: string) {
@@ -1163,56 +1190,36 @@ function parseUrlCache(contents: string) {
 function parseDatabaseStructureCache(contents: string) {
   return Schema.parseJson(DatabaseStructureCacheFileSchema)
     .pipe(Schema.decodeUnknown)(contents)
-    .pipe(
-      Effect.catchAll(() =>
-        Schema.parseJson(LegacyDatabaseStructureCacheFileSchema)
-          .pipe(Schema.decodeUnknown)(contents)
-          .pipe(
-            Effect.map((legacyCache) => ({
-              entries: Object.fromEntries(
-                Object.entries(legacyCache.entries).map(([cacheKey, cachedStructure]) => [
-                  cacheKey,
-                  {
-                    databaseStructure: buildDatabaseStructure(
-                      cachedStructure.databaseStructure.databaseId,
-                      cachedStructure.databaseStructure.columns,
-                      [],
-                      cachedStructure.databaseStructure.generatedAt,
-                    ),
-                    expiresAt: cachedStructure.expiresAt,
-                  },
-                ]),
-              ),
-            })),
-            Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)),
-          ),
-      ),
-    );
+    .pipe(Effect.catchAll(() => Effect.succeed(emptyDatabaseStructureCacheFile)));
 }
 
 function buildDatabaseStructure(
   databaseId: string,
+  engine: string,
   rows: ReadonlyArray<DatabaseColumnRow>,
   foreignKeyRows: ReadonlyArray<DatabaseForeignKeyRow>,
   generatedAt: number,
 ) {
-  const schemas = new Map<string, Map<string, Array<DatabaseStructureColumn>>>();
-  const foreignKeysByTable = new Map<string, Array<DatabaseStructureForeignKey>>();
-  const referencesByColumn = new Map<string, { schema: string; table: string; column: string }>();
+  const namespaces = new Map<string, Map<string, Array<DatabaseStructureColumn>>>();
+  const referencesByRelation = new Map<string, Array<DatabaseStructureReference>>();
+  const referencesByColumn = new Map<
+    string,
+    { namespace: string; relation: string; column: string }
+  >();
 
   for (const row of rows) {
-    let tables = schemas.get(row.table_schema);
+    let relations = namespaces.get(row.table_schema);
 
-    if (!tables) {
-      tables = new Map();
-      schemas.set(row.table_schema, tables);
+    if (!relations) {
+      relations = new Map();
+      namespaces.set(row.table_schema, relations);
     }
 
-    let columns = tables.get(row.table_name);
+    let columns = relations.get(row.table_name);
 
     if (!columns) {
       columns = [];
-      tables.set(row.table_name, columns);
+      relations.set(row.table_name, columns);
     }
 
     columns.push({
@@ -1224,48 +1231,54 @@ function buildDatabaseStructure(
 
   for (const row of foreignKeyRows) {
     const tableKey = getTableKey(row.table_schema, row.table_name);
-    const foreignKeys = foreignKeysByTable.get(tableKey) ?? [];
-    const existingForeignKey = foreignKeys.find(
-      (foreignKey) => foreignKey.name === row.constraint_name,
+    const relationReferences = referencesByRelation.get(tableKey) ?? [];
+    const existingReference = relationReferences.find(
+      (reference) => reference.name === row.constraint_name,
     );
 
     referencesByColumn.set(getColumnKey(row.table_schema, row.table_name, row.column_name), {
-      schema: row.foreign_table_schema,
-      table: row.foreign_table_name,
+      namespace: row.foreign_table_schema,
+      relation: row.foreign_table_name,
       column: row.foreign_column_name,
     });
 
-    if (existingForeignKey) {
-      existingForeignKey.columns.push(row.column_name);
-      existingForeignKey.references.columns.push(row.foreign_column_name);
+    if (existingReference) {
+      existingReference.columns.push(row.column_name);
+      existingReference.references.columns.push(row.foreign_column_name);
       continue;
     }
 
-    foreignKeys.push({
+    relationReferences.push({
       name: row.constraint_name,
       columns: [row.column_name],
       references: {
-        schema: row.foreign_table_schema,
-        table: row.foreign_table_name,
+        namespace: row.foreign_table_schema,
+        relation: row.foreign_table_name,
         columns: [row.foreign_column_name],
       },
     });
-    foreignKeysByTable.set(tableKey, foreignKeys);
+    referencesByRelation.set(tableKey, relationReferences);
   }
 
   return {
     formatVersion: 1,
     databaseId,
+    engine,
     generatedAt,
-    schemas: Array.from(schemas, ([schemaName, tables]) => ({
-      name: schemaName,
-      tables: Array.from(tables, ([tableName, columns]) => ({
-        name: tableName,
+    metadataSource: "dbq-adapter",
+    namespaces: Array.from(namespaces, ([namespaceName, relations]) => ({
+      name: namespaceName,
+      kind: "schema",
+      relations: Array.from(relations, ([relationName, columns]) => ({
+        name: relationName,
+        kind: "table",
         columns: columns.map((column) => ({
           ...column,
-          references: referencesByColumn.get(getColumnKey(schemaName, tableName, column.name)),
+          references: referencesByColumn.get(
+            getColumnKey(namespaceName, relationName, column.name),
+          ),
         })),
-        foreignKeys: foreignKeysByTable.get(getTableKey(schemaName, tableName)) ?? [],
+        references: referencesByRelation.get(getTableKey(namespaceName, relationName)) ?? [],
       })),
     })),
   } satisfies DatabaseStructure;
@@ -1280,33 +1293,36 @@ function getColumnKey(schema: string, table: string, column: string) {
 }
 
 function countDatabaseStructureColumns(databaseStructure: DatabaseStructure) {
-  return databaseStructure.schemas.reduce(
-    (schemaCount, schemaEntry) =>
-      schemaCount +
-      schemaEntry.tables.reduce((tableCount, table) => tableCount + table.columns.length, 0),
+  return databaseStructure.namespaces.reduce(
+    (namespaceCount, namespace) =>
+      namespaceCount +
+      namespace.relations.reduce(
+        (relationCount, relation) => relationCount + relation.columns.length,
+        0,
+      ),
     0,
   );
 }
 
 function filterDatabaseStructure(
   databaseStructure: DatabaseStructure,
-  scope: { schema?: string; table?: string },
+  scope: { namespace?: string; relation?: string },
 ) {
-  if (!scope.schema && !scope.table) {
+  if (!scope.namespace && !scope.relation) {
     return databaseStructure;
   }
 
   return {
     ...databaseStructure,
-    schemas: databaseStructure.schemas
-      .filter((schemaEntry) => scope.schema === undefined || schemaEntry.name === scope.schema)
-      .map((schemaEntry) => ({
-        ...schemaEntry,
-        tables: schemaEntry.tables.filter(
-          (table) => scope.table === undefined || table.name === scope.table,
+    namespaces: databaseStructure.namespaces
+      .filter((namespace) => scope.namespace === undefined || namespace.name === scope.namespace)
+      .map((namespace) => ({
+        ...namespace,
+        relations: namespace.relations.filter(
+          (relation) => scope.relation === undefined || relation.name === scope.relation,
         ),
       }))
-      .filter((schemaEntry) => schemaEntry.tables.length > 0),
+      .filter((namespace) => namespace.relations.length > 0),
   } satisfies DatabaseStructure;
 }
 
@@ -1320,10 +1336,12 @@ function formatDatabaseStructure(
   if (format === "json") {
     return {
       databaseId: databaseStructure.databaseId,
+      engine: databaseStructure.engine,
       databaseStructureCacheStatus,
       databaseStructureGeneratedAt,
       formatVersion: databaseStructure.formatVersion,
-      schemas: databaseStructure.schemas,
+      metadataSource: databaseStructure.metadataSource,
+      namespaces: databaseStructure.namespaces,
     };
   }
 
@@ -1336,14 +1354,17 @@ function renderCompactDatabaseStructure(
 ) {
   const lines = [
     `database ${databaseStructure.databaseId}`,
+    `engine ${databaseStructure.engine}`,
     `generated_at ${databaseStructureGeneratedAt}`,
   ];
 
-  for (const schemaEntry of databaseStructure.schemas) {
-    lines.push("", `schema ${schemaEntry.name}`);
+  for (const namespace of databaseStructure.namespaces) {
+    lines.push("", `${namespace.kind} ${namespace.name}`);
 
-    for (const table of schemaEntry.tables) {
-      lines.push(`table ${table.name}: ${table.columns.map(renderCompactColumn).join(", ")}`);
+    for (const relation of namespace.relations) {
+      lines.push(
+        `${relation.kind} ${relation.name}: ${relation.columns.map(renderCompactColumn).join(", ")}`,
+      );
     }
   }
 
@@ -1352,7 +1373,7 @@ function renderCompactDatabaseStructure(
 
 function renderCompactColumn(column: DatabaseStructureColumn) {
   const reference = column.references
-    ? ` -> ${column.references.schema}.${column.references.table}.${column.references.column}`
+    ? ` -> ${column.references.namespace}.${column.references.relation}.${column.references.column}`
     : "";
 
   return `${column.name} ${normalizeDatabaseType(column.type)}${column.nullable ? "?" : ""}${reference}`;

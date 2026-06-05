@@ -4,7 +4,7 @@ confirmQueries = true
 databaseStructureCacheDurationSeconds = 3600
 
 [databases.example-development]
-engine = "postgres"
+engine = "sql"
 environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/example-development/url"
@@ -12,7 +12,14 @@ urlCommand = "op read op://Databases/example-development/url"
 databaseStructureCacheDurationSeconds = 900
 
 [databases.example-production]
-engine = "postgres"
+engine = "sql"
 environment = "production"
 readonly = true
 urlCommand = "op read op://Databases/example-production-readonly/url"
+
+[databases.example-custom-client]
+engine = "sql"
+environment = "development"
+readonly = true
+urlCommand = "op read op://Databases/example-custom-client/url"
+queryCommand = "example-sql-client --url \"$DBQ_DATABASE_URL\" --execute \"$DBQ_SQL\""

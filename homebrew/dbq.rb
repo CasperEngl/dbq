@@ -1,5 +1,5 @@
 class Dbq < Formula
-  desc "Local MCP server and CLI for named Postgres databases"
+  desc "Local MCP server and CLI for named databases"
   homepage "https://github.com/CasperEngl/dbq"
   version "0.1.0"
 
