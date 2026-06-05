@@ -10,6 +10,7 @@
     "build:release": "bun scripts/release.ts build",
     "check": "bun run format && bun run lint && bun run typecheck",
     "format": "oxfmt --write .",
+    "install:local": "./install-local.sh",
     "lint": "oxlint . --deny-warnings",
     "release": "bun scripts/release.ts create",
     "release:homebrew": "bun scripts/release.ts homebrew",
