@@ -26,6 +26,10 @@ Do not edit installed/global skill copies directly, including files under `~/.ag
 
 Keep the canonical DBQ skill focused on the current state and recommended behavior. Do not document in-between migration steps, removed behavior, or what no longer exists unless the current skill user must know it to operate DBQ correctly.
 
+## Effect style
+
+Prefer `.pipe(...)` over wrapping expressions in helper calls when both forms are reasonable in Effect code.
+
 When using Effect `Schema.TaggedError` classes, yield tagged errors directly:
 
 ```ts

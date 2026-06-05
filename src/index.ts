@@ -90,15 +90,47 @@ const DatabaseColumnRowSchema = Schema.Struct({
   is_nullable: Schema.String,
 });
 
+const DatabaseForeignKeyRowSchema = Schema.Struct({
+  constraint_name: Schema.String,
+  table_schema: Schema.String,
+  table_name: Schema.String,
+  column_name: Schema.String,
+  foreign_table_schema: Schema.String,
+  foreign_table_name: Schema.String,
+  foreign_column_name: Schema.String,
+});
+
 const DatabaseStructureColumnSchema = Schema.Struct({
   name: Schema.String,
   type: Schema.String,
   nullable: Schema.Boolean,
+  references: Schema.optional(
+    Schema.Struct({
+      schema: Schema.String,
+      table: Schema.String,
+      column: Schema.String,
+    }),
+  ),
 });
+
+const DatabaseStructureForeignKeySchema = Schema.mutable(
+  Schema.Struct({
+    name: Schema.String,
+    columns: Schema.mutable(Schema.Array(Schema.String)),
+    references: Schema.mutable(
+      Schema.Struct({
+        schema: Schema.String,
+        table: Schema.String,
+        columns: Schema.mutable(Schema.Array(Schema.String)),
+      }),
+    ),
+  }),
+);
 
 const DatabaseStructureTableSchema = Schema.Struct({
   name: Schema.String,
   columns: Schema.Array(DatabaseStructureColumnSchema),
+  foreignKeys: Schema.Array(DatabaseStructureForeignKeySchema),
 });
 
 const DatabaseStructureSchemaEntrySchema = Schema.Struct({
@@ -163,6 +195,8 @@ const describeDatabaseInputSchema = z.object({
   databaseId: z.string().min(1),
   refresh: z.boolean().default(false),
   format: z.enum(["compact", "json"]).default("compact"),
+  schema: z.string().min(1).optional(),
+  table: z.string().min(1).optional(),
 });
 
 type Config = typeof ConfigSchema.Type;
@@ -172,7 +206,9 @@ type QueryDatabaseInput = z.infer<typeof queryDatabaseInputSchema>;
 type DescribeDatabaseInput = z.infer<typeof describeDatabaseInputSchema>;
 type CachedDatabaseUrl = typeof CachedDatabaseUrlSchema.Type;
 type DatabaseColumnRow = typeof DatabaseColumnRowSchema.Type;
+type DatabaseForeignKeyRow = typeof DatabaseForeignKeyRowSchema.Type;
 type DatabaseStructureColumn = typeof DatabaseStructureColumnSchema.Type;
+type DatabaseStructureForeignKey = typeof DatabaseStructureForeignKeySchema.Type;
 type DatabaseStructure = typeof DatabaseStructureSchema.Type;
 type CachedDatabaseStructure = typeof CachedDatabaseStructureSchema.Type;
 
@@ -664,7 +700,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
     const describeDatabase = Effect.fn("Dbq.describeDatabase")(function* (
       input: DescribeDatabaseInput,
     ) {
-      const { databaseId, refresh, format } = input;
+      const { databaseId, refresh, format, schema, table } = input;
       const config = yield* loadConfig();
       const database = yield* getDatabase(config, databaseId);
       const databaseUrl = yield* resolveDatabaseUrl(databaseId, database, config.security);
@@ -678,7 +714,12 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
       const formatDescribeResponse = (
         databaseStructure: DatabaseStructure,
         databaseStructureCacheStatus: "hit" | "miss" | "refreshed",
-      ) => formatDatabaseStructure(databaseStructure, databaseStructureCacheStatus, format);
+      ) =>
+        formatDatabaseStructure(
+          filterDatabaseStructure(databaseStructure, { schema, table }),
+          databaseStructureCacheStatus,
+          format,
+        );
 
       if (!refresh) {
         const memoryCachedDatabaseStructure = getCachedDatabaseStructure(databaseStructureCacheKey);
@@ -734,13 +775,41 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                   from information_schema.columns
                   where table_schema not in ('pg_catalog', 'information_schema')
                   order by table_schema, table_name, ordinal_position
-                  limit 1000
+                `,
+              );
+              const foreignKeyResult = yield* pgQuery(
+                client,
+                `
+                  select
+                    tc.constraint_name,
+                    tc.table_schema,
+                    tc.table_name,
+                    kcu.column_name,
+                    ccu.table_schema as foreign_table_schema,
+                    ccu.table_name as foreign_table_name,
+                    ccu.column_name as foreign_column_name
+                  from information_schema.table_constraints tc
+                  join information_schema.key_column_usage kcu
+                    on tc.constraint_schema = kcu.constraint_schema
+                    and tc.constraint_name = kcu.constraint_name
+                    and tc.table_schema = kcu.table_schema
+                    and tc.table_name = kcu.table_name
+                  join information_schema.constraint_column_usage ccu
+                    on ccu.constraint_schema = tc.constraint_schema
+                    and ccu.constraint_name = tc.constraint_name
+                  where tc.constraint_type = 'FOREIGN KEY'
+                    and tc.table_schema not in ('pg_catalog', 'information_schema')
+                  order by
+                    tc.table_schema,
+                    tc.table_name,
+                    tc.constraint_name,
+                    kcu.ordinal_position
                 `,
               );
               yield* pgQuery(client, "rollback");
-              return queryResult;
+              return { columns: queryResult, foreignKeys: foreignKeyResult };
             }),
-            Effect.tap((queryResult) =>
+            Effect.tap(({ columns }) =>
               writeAuditEntry({
                 auditId,
                 databaseId,
@@ -748,7 +817,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                 startedAt,
                 durationMs: Date.now() - startedAt,
                 success: true,
-                rowCount: queryResult.rowCount ?? 0,
+                rowCount: columns.rowCount ?? 0,
               }),
             ),
             Effect.tapError((error) =>
@@ -768,7 +837,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
             ),
           );
           const columns = yield* Schema.decodeUnknown(Schema.Array(DatabaseColumnRowSchema))(
-            result.rows,
+            result.columns.rows,
           ).pipe(
             Effect.mapError(
               (cause) =>
@@ -778,7 +847,23 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
                 }),
             ),
           );
-          const databaseStructure = buildDatabaseStructure(databaseId, columns, Date.now());
+          const foreignKeys = yield* Schema.decodeUnknown(
+            Schema.Array(DatabaseForeignKeyRowSchema),
+          )(result.foreignKeys.rows).pipe(
+            Effect.mapError(
+              (cause) =>
+                new DatabaseError({
+                  message: "Could not decode database foreign keys",
+                  cause,
+                }),
+            ),
+          );
+          const databaseStructure = buildDatabaseStructure(
+            databaseId,
+            columns,
+            foreignKeys,
+            Date.now(),
+          );
 
           setCachedDatabaseStructure(
             databaseStructureCacheKey,
@@ -899,7 +984,7 @@ const startMcpServer = Effect.fn("startMcpServer")(function* () {
     "describe_database",
     {
       description:
-        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output.",
+        "Describe schemas, tables, and columns for a configured Postgres database. Set refresh to true to bypass cached database structure. Use format compact for token-efficient text or json for grouped structured output. Use schema and table to scope large database output.",
       inputSchema: describeDatabaseInputSchema,
     },
     (input) => {
@@ -948,12 +1033,26 @@ const describeCommand = Command.make(
       Options.withDefault("compact"),
       Options.withDescription("Output compact token-efficient text or grouped JSON"),
     ),
+    schema: Options.text("schema").pipe(
+      Options.withDefault(""),
+      Options.withDescription("Only output one schema from the cached database structure"),
+    ),
+    table: Options.text("table").pipe(
+      Options.withDefault(""),
+      Options.withDescription("Only output one table from the cached database structure"),
+    ),
   },
-  ({ databaseId, refresh, format }) =>
+  ({ databaseId, refresh, format, schema, table }) =>
     Effect.gen(function* () {
       const dbq = yield* Dbq;
       const result = yield* dbq.describeDatabase(
-        describeDatabaseInputSchema.parse({ databaseId, refresh, format }),
+        describeDatabaseInputSchema.parse({
+          databaseId,
+          refresh,
+          format,
+          schema: schema || undefined,
+          table: table || undefined,
+        }),
       );
       yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
     }),
@@ -1087,6 +1186,7 @@ function parseDatabaseStructureCache(contents: string) {
                 databaseStructure: buildDatabaseStructure(
                   cachedStructure.databaseStructure.databaseId,
                   cachedStructure.databaseStructure.columns,
+                  [],
                   cachedStructure.databaseStructure.generatedAt,
                 ),
                 expiresAt: cachedStructure.expiresAt,
@@ -1103,9 +1203,12 @@ function parseDatabaseStructureCache(contents: string) {
 function buildDatabaseStructure(
   databaseId: string,
   rows: ReadonlyArray<DatabaseColumnRow>,
+  foreignKeyRows: ReadonlyArray<DatabaseForeignKeyRow>,
   generatedAt: number,
 ) {
   const schemas = new Map<string, Map<string, Array<DatabaseStructureColumn>>>();
+  const foreignKeysByTable = new Map<string, Array<DatabaseStructureForeignKey>>();
+  const referencesByColumn = new Map<string, { schema: string; table: string; column: string }>();
 
   for (const row of rows) {
     let tables = schemas.get(row.table_schema);
@@ -1129,6 +1232,37 @@ function buildDatabaseStructure(
     });
   }
 
+  for (const row of foreignKeyRows) {
+    const tableKey = getTableKey(row.table_schema, row.table_name);
+    const foreignKeys = foreignKeysByTable.get(tableKey) ?? [];
+    const existingForeignKey = foreignKeys.find(
+      (foreignKey) => foreignKey.name === row.constraint_name,
+    );
+
+    referencesByColumn.set(getColumnKey(row.table_schema, row.table_name, row.column_name), {
+      schema: row.foreign_table_schema,
+      table: row.foreign_table_name,
+      column: row.foreign_column_name,
+    });
+
+    if (existingForeignKey) {
+      existingForeignKey.columns.push(row.column_name);
+      existingForeignKey.references.columns.push(row.foreign_column_name);
+      continue;
+    }
+
+    foreignKeys.push({
+      name: row.constraint_name,
+      columns: [row.column_name],
+      references: {
+        schema: row.foreign_table_schema,
+        table: row.foreign_table_name,
+        columns: [row.foreign_column_name],
+      },
+    });
+    foreignKeysByTable.set(tableKey, foreignKeys);
+  }
+
   return {
     formatVersion: 1,
     databaseId,
@@ -1137,10 +1271,22 @@ function buildDatabaseStructure(
       name: schemaName,
       tables: Array.from(tables, ([tableName, columns]) => ({
         name: tableName,
-        columns,
+        columns: columns.map((column) => ({
+          ...column,
+          references: referencesByColumn.get(getColumnKey(schemaName, tableName, column.name)),
+        })),
+        foreignKeys: foreignKeysByTable.get(getTableKey(schemaName, tableName)) ?? [],
       })),
     })),
   } satisfies DatabaseStructure;
+}
+
+function getTableKey(schema: string, table: string) {
+  return `${schema}.${table}`;
+}
+
+function getColumnKey(schema: string, table: string, column: string) {
+  return `${schema}.${table}.${column}`;
 }
 
 function countDatabaseStructureColumns(databaseStructure: DatabaseStructure) {
@@ -1150,6 +1296,28 @@ function countDatabaseStructureColumns(databaseStructure: DatabaseStructure) {
       schemaEntry.tables.reduce((tableCount, table) => tableCount + table.columns.length, 0),
     0,
   );
+}
+
+function filterDatabaseStructure(
+  databaseStructure: DatabaseStructure,
+  scope: { schema?: string; table?: string },
+) {
+  if (!scope.schema && !scope.table) {
+    return databaseStructure;
+  }
+
+  return {
+    ...databaseStructure,
+    schemas: databaseStructure.schemas
+      .filter((schemaEntry) => scope.schema === undefined || schemaEntry.name === scope.schema)
+      .map((schemaEntry) => ({
+        ...schemaEntry,
+        tables: schemaEntry.tables.filter(
+          (table) => scope.table === undefined || table.name === scope.table,
+        ),
+      }))
+      .filter((schemaEntry) => schemaEntry.tables.length > 0),
+  } satisfies DatabaseStructure;
 }
 
 function formatDatabaseStructure(
@@ -1179,7 +1347,6 @@ function renderCompactDatabaseStructure(
   const lines = [
     `database ${databaseStructure.databaseId}`,
     `generated_at ${databaseStructureGeneratedAt}`,
-    `format_version ${databaseStructure.formatVersion}`,
   ];
 
   for (const schemaEntry of databaseStructure.schemas) {
@@ -1194,7 +1361,11 @@ function renderCompactDatabaseStructure(
 }
 
 function renderCompactColumn(column: DatabaseStructureColumn) {
-  return `${column.name} ${normalizeDatabaseType(column.type)}${column.nullable ? "?" : ""}`;
+  const reference = column.references
+    ? ` -> ${column.references.schema}.${column.references.table}.${column.references.column}`
+    : "";
+
+  return `${column.name} ${normalizeDatabaseType(column.type)}${column.nullable ? "?" : ""}${reference}`;
 }
 
 function normalizeDatabaseType(type: string) {

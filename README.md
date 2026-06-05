@@ -91,7 +91,7 @@ Use `urlCommand` for secret-manager references and let DBQ run the command. Do n
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-DBQ also caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire schema/table/column snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the snapshot.
+DBQ also caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Structure includes schemas, tables, columns, nullability, and foreign keys. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire structure snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the snapshot.
 
 ## CLI
 
@@ -100,12 +100,14 @@ Use the same binary locally:
 ```bash
 dbq list
 dbq describe my-project-development
+dbq describe my-project-development --schema public
+dbq describe my-project-development --schema public --table users
 dbq describe my-project-development --format json
 dbq describe my-project-development --refresh
 dbq query my-project-development 'select * from users limit 10'
 ```
 
-`describe` defaults to `--format compact`, a token-efficient line format for agents that omits cache status. Use `--format json` for grouped structured output with cache details. `query` accepts `--max-rows` and defaults to 100 rows.
+`describe` defaults to `--format compact`, a token-efficient line format for agents that omits cache status and format version. Use `--schema` and `--table` to keep large database output focused. Use `--format json` for grouped structured output with cache details. `query` accepts `--max-rows` and defaults to 100 rows.
 
 ## MCP Tools
 

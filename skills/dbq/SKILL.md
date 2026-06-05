@@ -38,6 +38,8 @@ Use the CLI:
 ```bash
 dbq list
 dbq describe app-development
+dbq describe app-development --schema public
+dbq describe app-development --schema public --table users
 dbq describe app-development --format json
 dbq describe app-development --refresh
 dbq query app-development 'select * from users limit 10'
@@ -45,7 +47,7 @@ dbq query app-production-readonly 'select now()' --max-rows 10
 dbq mcp
 ```
 
-`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL, allows only `SELECT`/`WITH`, rejects semicolons, and defaults to `--max-rows 100`.
+`describe` defaults to `--format compact`, a token-efficient line format for agents. Use `--schema` and `--table` to keep large database output focused. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL, allows only `SELECT`/`WITH`, rejects semicolons, and defaults to `--max-rows 100`.
 
 ## Querying Rules
 
@@ -54,6 +56,7 @@ Use DBQ as the only interface for database queries and DBQ-managed credentials:
 - Prefer DBQ MCP tools when available: `list_databases`, `describe_database`, `query_database`.
 - Use the `dbq` CLI when MCP tools are unavailable or unclear.
 - Before writing SQL against an unfamiliar database, call `describe_database` once using the default compact format and reuse that database structure during the task.
+- For large databases, scope structure output with `schema` and `table` instead of dumping the whole database structure into the conversation.
 - Use `format: "json"` or `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
 - Do not refresh database structure before every query. Use `refresh: true` or `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
 - Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
