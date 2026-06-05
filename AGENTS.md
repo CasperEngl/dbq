@@ -8,6 +8,16 @@ bun run check
 
 This runs formatting with oxfmt, linting with oxlint, and TypeScript typechecking with tsgo.
 
+## DBQ testing
+
+Before testing the DBQ CLI against the local user's configured databases, ask the user for permission to update the local user's global DBQ config at `~/.dbq/config.toml` so database structure snapshots are persisted. If the user approves, ensure the `[security]` section contains:
+
+```toml
+databaseStructureCacheDurationSeconds = 3600
+```
+
+Do not print or inspect configured database URLs or secret resolver output while making this change. If the user does not approve the config update, do not test CLI behavior that depends on persisted database structure snapshots.
+
 ## DBQ skill edits
 
 When updating the DBQ agent skill, edit only the project-local skill at `skills/dbq/SKILL.md`.

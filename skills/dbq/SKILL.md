@@ -9,7 +9,7 @@ DBQ queries named Postgres databases through `~/.dbq/config.toml`. It keeps data
 
 DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
 
-DBQ caches database structure from `describe` in memory per process. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to persist schema/table/column structure between separate CLI runs in `~/.dbq/database-structure-cache.json`. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the cache.
+DBQ caches database structure from `describe` in memory per process and persists successful structure snapshots to `~/.dbq/database-structure-cache.json`. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire schema/table/column snapshots after a duration; `0` keeps snapshots until they are manually refreshed. Use `dbq describe <database-id> --refresh` or MCP `describe_database` with `refresh: true` to bypass cached database structure and update the snapshot.
 
 ## Install
 
@@ -98,7 +98,7 @@ DBQ reads config from `~/.dbq/config.toml`. Do not print, commit, or expose data
 confirmQueries = true
 # 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
 databaseUrlCacheDurationSeconds = 900
-# 0 disables disk caching for database structure. Structure is still cached in memory per process.
+# 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
 databaseStructureCacheDurationSeconds = 3600
 
 [databases.app-development]
@@ -108,7 +108,7 @@ readonly = true
 urlCommand = "op read 'op://Databases/App Development DB URL/notesPlain'"
 # Optional per-database override. Each database URL has its own cache entry and expiry.
 databaseUrlCacheDurationSeconds = 300
-# Optional per-database override for schema/table/column structure.
+# Optional per-database structure snapshot expiry override.
 databaseStructureCacheDurationSeconds = 900
 
 [databases.app-production-readonly]

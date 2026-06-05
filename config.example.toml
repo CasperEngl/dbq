@@ -1,6 +1,6 @@
 [security]
 confirmQueries = true
-# 0 disables disk caching. Database structure is still cached in memory per DBQ process.
+# 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
 databaseStructureCacheDurationSeconds = 3600
 
 [databases.example-development]
@@ -8,7 +8,7 @@ engine = "postgres"
 environment = "development"
 readonly = true
 urlCommand = "op read op://Databases/example-development/url"
-# Optional per-database database structure cache duration override.
+# Optional per-database database structure snapshot expiry override.
 databaseStructureCacheDurationSeconds = 900
 
 [databases.example-production]

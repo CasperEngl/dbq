@@ -391,10 +391,6 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         databaseStructure: DatabaseStructure,
         databaseStructureCacheDurationSeconds: number,
       ) {
-        if (databaseStructureCacheDurationSeconds <= 0) {
-          return;
-        }
-
         const contents = yield* readOptionalFile(databaseStructureCachePath);
         const parsedCache = contents
           ? yield* parseDatabaseStructureCache(contents)
@@ -405,7 +401,10 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
 
         entries[cacheKey] = {
           databaseStructure,
-          expiresAt: Date.now() + databaseStructureCacheDurationSeconds * 1000,
+          expiresAt:
+            databaseStructureCacheDurationSeconds > 0
+              ? Date.now() + databaseStructureCacheDurationSeconds * 1000
+              : null,
         };
 
         yield* Effect.tryPromise({
@@ -663,9 +662,7 @@ class Dbq extends Effect.Service<Dbq>()("Dbq", {
         }
 
         const diskCachedDatabaseStructure =
-          databaseStructureCacheDurationSeconds > 0
-            ? yield* readDiskCachedDatabaseStructure(databaseStructureCacheKey)
-            : undefined;
+          yield* readDiskCachedDatabaseStructure(databaseStructureCacheKey);
 
         if (diskCachedDatabaseStructure) {
           databaseStructureCache.set(databaseStructureCacheKey, diskCachedDatabaseStructure);
