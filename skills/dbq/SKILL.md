@@ -23,6 +23,10 @@ source ~/.dbq/env && psql "$DBQ_APP_DEV_URL" --no-psqlrc --csv -c 'select 1'
 - To check a variable is set without seeing it: `source ~/.dbq/env && [ -n "$DBQ_APP_DEV_URL" ] && echo OK`.
 - Debug connection failures from the client's stderr only. If the URL itself seems wrong, ask the user to fix it in `~/.dbq/env` — do not look at it.
 
+## Bare invocation
+
+If invoked with no question or task, show current state and stop: list the databases from `~/.dbq/connections.md` (name, engine, readonly), flag any env vars still unset (use the `[ -n ... ]` check — never the value), and offer to query a database, add or remove one, refresh schema notes, or set up enforcement. If no registry exists, start the setup interview instead.
+
 ## Setup — no registry yet, or a new database
 
 Interview the user in one round:
@@ -30,6 +34,8 @@ Interview the user in one round:
 1. Name and engine of the database (postgres, mysql, sqlite, ...)?
 2. Where does the URL come from — literal string, existing env var, or a secret-manager command like `op read ...`?
 3. Read-only? Production? Any standing rules (always LIMIT, confirm writes, ...)?
+
+Setup is idempotent: if the database already exists in the registry, update its entry and env placeholder in place instead of duplicating them.
 
 Verify the client is installed (`command -v psql`), then:
 
