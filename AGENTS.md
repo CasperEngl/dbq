@@ -1,41 +1,11 @@
 # Agent Instructions
 
-After completing a task, run:
-
-```bash
-bun run check
-```
-
-This runs formatting with oxfmt, linting with oxlint, and TypeScript typechecking with tsgo.
-
-## DBQ testing
-
-Before testing the DBQ CLI against the local user's configured databases, ask the user for permission to update the local user's global DBQ config at `~/.dbq/config.jsonc` so database structure snapshots are persisted. If the user approves, ensure the `security` object contains:
-
-```jsonc
-"databaseStructureCacheDurationSeconds": 3600
-```
-
-Do not print or inspect configured database URLs or secret resolver output while making this change. If the user does not approve the config update, do not test CLI behavior that depends on persisted database structure snapshots.
+This repo is a single agent skill: `skills/dbq/SKILL.md`. There is no code, build, or test step.
 
 ## DBQ skill edits
 
-When updating the DBQ agent skill, edit only the project-local skill at `skills/dbq/SKILL.md`.
+Edit only the project-local skill at `skills/dbq/SKILL.md`. Do not edit installed/global skill copies, including files under `~/.agents/skills/`, `~/.claude/skills/`, or `~/.config/opencode/skills/`. After updating, tell the user to reinstall or copy the skill if they want it available outside this repo.
 
-Do not edit installed/global skill copies directly, including files under `~/.agents/skills/`, `~/.claude/skills/`, or `~/.config/opencode/skills/`. After the project-local skill is updated, tell the user to install or copy the update into their global opencode configuration if they want it available outside this repo.
+Keep the skill focused on current state and recommended behavior. Do not document migration steps, removed behavior, or what no longer exists unless the skill user must know it to operate DBQ correctly.
 
-Keep the canonical DBQ skill focused on the current state and recommended behavior. Do not document in-between migration steps, removed behavior, or what no longer exists unless the current skill user must know it to operate DBQ correctly.
-
-## Effect style
-
-Validate data at system boundaries and edges when possible, not repeatedly inside already-typed internal paths. For example, decode config files, cache files, database rows, and external command inputs/outputs as they enter the system; avoid re-validating values that Effect CLI or prior schema decoders have already parsed.
-
-Prefer `.pipe(...)` over wrapping expressions in helper calls when both forms are reasonable in Effect code.
-
-When using Effect `Schema.TaggedError` classes, yield tagged errors directly:
-
-```ts
-return yield * new ValidationError({ message: "Invalid input" });
-```
-
-Do not wrap yieldable tagged errors in `Effect.fail(...)`.
+Keep SKILL.md minimal. Every instruction costs tokens in the agent's context; prefer removing rules over adding them.

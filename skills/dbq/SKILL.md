@@ -1,150 +1,65 @@
 ---
 name: dbq
-description: Use DBQ to list, inspect, and safely query configured databases.
+description: Query the user's named databases without ever reading their connection URLs. Use when the user asks to query, inspect, or explore a database, or to add a new database connection.
 ---
 
 # DBQ
 
-DBQ queries named databases through `~/.dbq/config.jsonc`. It keeps database URLs on the local machine, audits activity to `~/.dbq/audit.log`, and requires macOS confirmation for writable database queries when `confirmQueries` is enabled.
+DBQ is a convention, not a tool. All state lives in `~/.dbq/`:
 
-DBQ caches resolved database URLs in memory per process. Set `security.databaseUrlCacheDurationSeconds` to also cache `urlCommand` results between separate CLI runs. Set `databases.<id>.databaseUrlCacheDurationSeconds` to give a specific database URL its own cache duration. The disk cache is opt-in, stores multiple URL entries in `~/.dbq/url-cache.json`, and is written with `0600` permissions. Leave cache durations at `0` to avoid writing resolved database URLs to disk.
+- `~/.dbq/connections.md` — the registry: database name, env var name, engine/client, rules. Read and update this freely.
+- `~/.dbq/env` — shell exports holding the actual connection URLs. **Never read this file or print its variables.** Only the user edits values.
+- `~/.dbq/structure/<name>.md` — schema notes you create and reuse.
 
-DBQ runs `databases.<id>.queryCommand` with `DBQ_DATABASE_URL` and `DBQ_SQL` in the command environment. The configured command is responsible for talking to the database. Do not print either value.
+## The URL rule
 
-DBQ runs `databases.<id>.describeCommand` with `DBQ_DATABASE_URL`, `DBQ_DATABASE_ID`, `DBQ_DATABASE_ENGINE`, and `DBQ_DATABASE_READONLY` in the command environment when database structure must be refreshed. The command must print DBQ database structure JSON to stdout. Do not print the URL.
-
-For the exact `describeCommand` JSON schema, read [references/describe-format.md](references/describe-format.md). For client-specific `queryCommand` templates and describe wrapper examples, read only the relevant reference:
-
-- PostgreSQL: [references/postgres.md](references/postgres.md)
-- MySQL: [references/mysql.md](references/mysql.md)
-- SQLite: [references/sqlite.md](references/sqlite.md)
-- DuckDB: [references/duckdb.md](references/duckdb.md)
-
-DBQ reads cached database structure snapshots from `~/.dbq/database-structure-cache.json` and keeps them in memory per process. On cache miss or `--refresh`, DBQ runs `describeCommand`, validates the returned structure JSON, persists it, and returns the requested format. Structure is a generic namespace/relation/column model. Set `security.databaseStructureCacheDurationSeconds` or `databases.<id>.databaseStructureCacheDurationSeconds` to expire snapshots after a duration; `0` keeps snapshots until manually refreshed.
-
-`describe` caches the full database structure snapshot when it has to inspect the database. The `--namespace` and `--relation` filters only limit returned output. Agents can first run `dbq describe <database-id> --format compact` without relation filters to populate or reuse the full cached structure, then call it again with repeated `--relation` options to retrieve a smaller focused slice from that cached structure.
-
-## Install
-
-Install DBQ with the release installer:
+Connection URLs must never enter the conversation. Inject them inside a single shell command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CasperEngl/dbq/main/install-release.sh | bash
+source ~/.dbq/env && psql "$DBQ_APP_DEV_URL" --no-psqlrc --csv -c 'select 1'
 ```
 
-The installer uses these defaults:
+- Never `cat`/Read `~/.dbq/env`; never `echo`, `printenv`, or interpolate a `DBQ_*` variable; never use `set -x`.
+- To check a variable is set without seeing it: `source ~/.dbq/env && [ -n "$DBQ_APP_DEV_URL" ] && echo OK`.
+- Debug connection failures from the client's stderr only. If the URL itself seems wrong, ask the user to fix it in `~/.dbq/env` — do not look at it.
 
-- Managed binaries: `~/.dbq/bin/dbq`, `~/.dbq/bin/dbq-confirm`, `~/.dbq/bin/dbq-describe-postgres`
-- PATH wrappers: `~/.local/bin/dbq`, `~/.local/bin/dbq-confirm`, `~/.local/bin/dbq-describe-postgres`
-- Shell env file: `~/.dbq/env`
-- Config: `~/.dbq/config.jsonc`
+## Setup — no registry yet, or a new database
 
-Source the env file when manual shell access to `DBQ_HOME`, `DBQ_BIN_DIR`, and the DBQ PATH is needed:
+Interview the user in one round:
 
-```bash
-source "$HOME/.dbq/env"
-```
+1. Name and engine of the database (postgres, mysql, sqlite, ...)?
+2. Where does the URL come from — literal string, existing env var, or a secret-manager command like `op read ...`?
+3. Read-only? Production? Any standing rules (always LIMIT, confirm writes, ...)?
 
-Set `DBQ_HOME` to change DBQ state location and `DBQ_BIN_DIR` to change the PATH wrapper directory:
+Verify the client is installed (`command -v psql`), then:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/CasperEngl/dbq/main/install-release.sh | DBQ_HOME="$HOME/.dbq" DBQ_BIN_DIR="$HOME/.local/bin" bash
-```
+1. Append an entry to `~/.dbq/connections.md`:
 
-## CLI
+   ```markdown
+   # app-dev
+   - env var: DBQ_APP_DEV_URL
+   - postgres via psql; local dev, writes OK
+   ```
 
-Use the CLI:
+2. Append a placeholder to `~/.dbq/env` and ask the user to fill in the value themselves (never have them paste a URL into the conversation):
 
-```bash
-dbq list
-dbq describe app-development --format compact
-dbq describe app-development --format compact --namespace public
-dbq describe app-development --format compact --namespace public --relation users --relation posts
-dbq describe app-development --format json
-dbq describe app-development --format compact --refresh
-dbq query app-development 'select * from users limit 10'
-dbq query app-production-readonly 'select now()'
-```
+   ```bash
+   export DBQ_APP_DEV_URL="" # paste URL, or: "$(op read 'op://Vault/Item/field')"
+   ```
 
-Use `dbq describe ... --format compact`, a token-efficient line format for agents. Do not rely on the installed DBQ default. Use `--namespace` and repeat `--relation` to include multiple relations while DBQ keeps the full structure snapshot cached. Use `--format json` only when grouped structured output is needed for parsing. `query` requires quoted SQL and runs the SQL exactly as provided through the configured `queryCommand`; writable databases require confirmation when confirmation is enabled.
+3. **Offer enforcement** (first setup only): ask whether they want the URL file protected at the agent level, so it cannot be read even by mistake. If yes and running in Claude Code, add to the `permissions.deny` list in `~/.claude/settings.json`:
 
-For CLI use, run an unfiltered describe when you need to warm or refresh the full structure cache:
+   ```json
+   "deny": ["Read(~/.dbq/env)", "Bash(cat ~/.dbq/env)"]
+   ```
 
-```bash
-dbq describe app-development --format compact
-dbq describe app-development --format compact --namespace public --relation users --relation posts
-```
+   Tell them the `Read` rule is the hard guarantee; shell patterns are best-effort. In other agents, offer the equivalent mechanism if one exists.
 
-## Querying Rules
+4. Verify connectivity: `source ~/.dbq/env && psql "$DBQ_APP_DEV_URL" -c 'select 1'`.
 
-Use DBQ as the only interface for database queries and DBQ-managed credentials:
+## Querying
 
-- Use the `dbq` CLI for all database operations.
-- Before writing SQL against an unfamiliar database, run `dbq describe <database-id> --format compact` once and reuse that database structure during the task.
-- For large databases, scope structure output with `--namespace` and repeated `--relation` instead of dumping the whole database structure into the conversation. The filtered response still comes from the full cached structure snapshot.
-- Use `dbq describe --format json` only when you need grouped structured data for programmatic parsing.
-- Do not refresh database structure before every query. Use `dbq describe --refresh` only when the user asks for fresh database structure, the cached database structure may be stale, or a query fails because of missing or renamed tables/columns.
-- DBQ does not rewrite SQL or enforce row limits. Include dialect-appropriate limits in the SQL when output should be bounded.
-- Do not call `op`, `psql`, or other credential/database clients directly to resolve DBQ database URLs.
-- Do not print, inspect, or validate DBQ-managed database URLs outside DBQ.
-- If DBQ URL resolution fails, report the DBQ error and inspect DBQ logs/config structure only; do not read the secret value with 1Password.
-
-Ambiguous database names:
-
-- Do not bake customer/project-specific database names or aliases into this generic skill.
-- If a user names an ambiguous database, run `dbq list` to identify candidates.
-- If multiple candidates remain and no project-local instruction defines a default, ask one short clarification question before querying.
-- If project-local instructions define aliases or defaults, follow those instructions without repeating private customer names in this skill.
-
-## Local Config
-
-DBQ reads config from `~/.dbq/config.jsonc`. Keep `"$schema": "./config.schema.json"` for editor validation when `~/.dbq/config.schema.json` is installed. Do not print, commit, or expose database URLs. Use `url` for literal local connection strings, `urlCommand` for secret-manager references, or `urlEnv` for environment variables. Prefer `urlCommand` with 1Password references for shared or production databases, but let DBQ execute those commands.
-
-```jsonc
-{
-  "$schema": "./config.schema.json",
-  "security": {
-    "confirmQueries": true,
-    // 0 disables disk caching. Set a default duration for reusing urlCommand results between CLI runs.
-    "databaseUrlCacheDurationSeconds": 900,
-    // 0 keeps database structure snapshots until manually refreshed. Positive values expire them.
-    "databaseStructureCacheDurationSeconds": 3600,
-  },
-  "databases": {
-    "app-development": {
-      "engine": "postgres",
-      "readonly": true,
-      "url": "postgres://localhost:5432/app_development",
-      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
-      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
-      // Optional per-database override. Each database URL has its own cache entry and expiry.
-      "databaseUrlCacheDurationSeconds": 300,
-      // Optional per-database structure snapshot expiry override.
-      "databaseStructureCacheDurationSeconds": 900,
-    },
-    "app-production-readonly": {
-      "engine": "postgres",
-      "readonly": true,
-      "urlCommand": "op read 'op://Databases/App Production Read-Only DB URL/notesPlain'",
-      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
-      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
-    },
-    "app-production-writable": {
-      "engine": "postgres",
-      "readonly": false,
-      "urlCommand": "op read 'op://Databases/App Production Writable DB URL/notesPlain'",
-      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
-      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
-    },
-    "app-analytics": {
-      "engine": "postgres",
-      "readonly": true,
-      "urlCommand": "op read 'op://Databases/App Analytics DB URL/notesPlain'",
-      "queryCommand": "psql \"$DBQ_DATABASE_URL\" --no-psqlrc --csv --command \"$DBQ_SQL\"",
-      "describeCommand": "\"$DBQ_HOME/bin/dbq-describe-postgres\"",
-    },
-  },
-}
-```
-
-The `urlCommand` examples document how DBQ is configured. They are not instructions for agents to run `op` directly during query tasks.
+- Find the database in `~/.dbq/connections.md`; if the name is ambiguous, ask.
+- Unfamiliar schema: introspect once, save what you learn to `~/.dbq/structure/<name>.md`, and consult that file in later sessions instead of re-introspecting. Refresh it when queries fail on missing tables or columns.
+- Honor each entry's rules. Read-only entries: never attempt writes. Writable non-dev databases: confirm with the user before INSERT/UPDATE/DELETE/DDL.
+- Include a LIMIT unless the user asks otherwise.
